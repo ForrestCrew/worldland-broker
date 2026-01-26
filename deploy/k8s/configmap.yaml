@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-config
+  namespace: web3-ai
+data:
+  PROXY_PORT: "8080"
+  DEBUG_MODE: "false"
+  # CORS 허용 Origin (프로덕션 도메인으로 변경)
+  ALLOWED_ORIGINS: "https://your-domain.com"

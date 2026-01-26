@@ -1,0 +1,52 @@
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: proxy-sa
+  namespace: web3-ai
+---
+# ClusterRole - K8s 리소스 접근 권한
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: proxy-server-role
+rules:
+  # Pod 조회 및 로그 읽기
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Job 생성 및 관리
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Node 정보 조회 (GPU 스케줄링용)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  # ========== Tenant 관리용 권한 (NEW) ==========
+  # Namespace 관리 (테넌트 생성/삭제)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "delete"]
+  # ResourceQuota 관리 (GPU 쿼터)
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["create", "get", "list", "update", "delete"]
+  # NetworkPolicy 관리 (테넌트 격리)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "delete"]
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: proxy-server-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: proxy-sa
+    namespace: web3-ai
+roleRef:
+  kind: ClusterRole
+  name: proxy-server-role
+  apiGroup: rbac.authorization.k8s.io

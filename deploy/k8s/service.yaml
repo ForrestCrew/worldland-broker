@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-svc
+  namespace: web3-ai
+  labels:
+    app: proxy-server
+spec:
+  type: ClusterIP
+  selector:
+    app: proxy-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

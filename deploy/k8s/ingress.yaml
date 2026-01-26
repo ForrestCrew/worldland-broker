@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: proxy-ingress
+  namespace: web3-ai
+  annotations:
+    # nginx ingress controller 사용 시
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # CORS 설정 (필요시)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    # TLS 자동 발급 (cert-manager 사용 시)
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # TLS 설정 (도메인 있을 경우 주석 해제)
+  # tls:
+  #   - hosts:
+  #       - api.your-domain.com
+  #     secretName: proxy-tls
+  rules:
+    # TODO: 실제 도메인으로 변경
+    - host: api.your-domain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: proxy-svc
+                port:
+                  number: 8080
+    # 로컬 테스트용 (host 없이)
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: proxy-svc
+                port:
+                  number: 8080
