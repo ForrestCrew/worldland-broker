@@ -92,20 +92,20 @@ func (m *SessionManager) loadAndValidateTransition(ctx context.Context, sessionI
 }
 
 // TransitionToRunning transitions a session from PENDING to RUNNING
-// Requires rentalID and blockNumber from the RentalStarted blockchain event
-func (m *SessionManager) TransitionToRunning(ctx context.Context, sessionID string, rentalID uint64, blockNumber uint64) error {
+// Requires rentalID, blockNumber, txHash, and startTime from the RentalStarted blockchain event
+func (m *SessionManager) TransitionToRunning(ctx context.Context, sessionID string, rentalID uint64, blockNumber uint64, txHash string, startTime time.Time) error {
 	session, err := m.loadAndValidateTransition(ctx, sessionID, domain.RentalStateRunning)
 	if err != nil {
 		return err
 	}
 
 	// Apply transition with required metadata
-	now := time.Now()
 	session.State = domain.RentalStateRunning
 	session.RentalID = &rentalID
 	session.BlockNumber = &blockNumber
-	session.StartTime = &now
-	session.UpdatedAt = now
+	session.TxHash = &txHash
+	session.StartTime = &startTime
+	session.UpdatedAt = time.Now()
 
 	if err := m.sessionRepo.Update(ctx, session); err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
@@ -116,7 +116,8 @@ func (m *SessionManager) TransitionToRunning(ctx context.Context, sessionID stri
 
 // TransitionToStopped transitions a session from RUNNING to STOPPED
 // Called when RentalStopped blockchain event is received
-func (m *SessionManager) TransitionToStopped(ctx context.Context, sessionID string, endTime time.Time, totalCost string) error {
+// Includes endTime, totalCost, txHash, and blockNumber from the blockchain event
+func (m *SessionManager) TransitionToStopped(ctx context.Context, sessionID string, endTime time.Time, totalCost string, txHash string, blockNumber uint64) error {
 	session, err := m.loadAndValidateTransition(ctx, sessionID, domain.RentalStateStopped)
 	if err != nil {
 		return err
@@ -125,6 +126,8 @@ func (m *SessionManager) TransitionToStopped(ctx context.Context, sessionID stri
 	// Apply transition
 	session.State = domain.RentalStateStopped
 	session.EndTime = &endTime
+	session.TxHash = &txHash
+	session.BlockNumber = &blockNumber
 	session.UpdatedAt = time.Now()
 
 	if err := m.sessionRepo.Update(ctx, session); err != nil {

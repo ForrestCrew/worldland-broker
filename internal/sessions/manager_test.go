@@ -278,8 +278,10 @@ func TestTransitionToRunning_FromPending_Success(t *testing.T) {
 
 	rentalID := uint64(100)
 	blockNum := uint64(5000)
+	txHash := "0xabc123"
+	startTime := time.Now()
 
-	err := manager.TransitionToRunning(ctx, session.ID, rentalID, blockNum)
+	err := manager.TransitionToRunning(ctx, session.ID, rentalID, blockNum, txHash, startTime)
 	if err != nil {
 		t.Fatalf("TransitionToRunning failed: %v", err)
 	}
@@ -295,6 +297,9 @@ func TestTransitionToRunning_FromPending_Success(t *testing.T) {
 	if updated.BlockNumber == nil || *updated.BlockNumber != blockNum {
 		t.Errorf("Expected BlockNumber %d, got %v", blockNum, updated.BlockNumber)
 	}
+	if updated.TxHash == nil || *updated.TxHash != txHash {
+		t.Errorf("Expected TxHash %s, got %v", txHash, updated.TxHash)
+	}
 	if updated.StartTime == nil {
 		t.Error("Expected StartTime to be set")
 	}
@@ -308,7 +313,7 @@ func TestTransitionToRunning_FromRunning_Fails(t *testing.T) {
 	session := createTestSession(domain.RentalStateRunning)
 	sessionRepo.sessions[session.ID] = session
 
-	err := manager.TransitionToRunning(ctx, session.ID, 200, 6000)
+	err := manager.TransitionToRunning(ctx, session.ID, 200, 6000, "0xdef456", time.Now())
 	if err == nil {
 		t.Fatal("Expected error when transitioning from RUNNING to RUNNING")
 	}
@@ -326,7 +331,7 @@ func TestTransitionToRunning_FromStopped_Fails(t *testing.T) {
 	session := createTestSession(domain.RentalStateStopped)
 	sessionRepo.sessions[session.ID] = session
 
-	err := manager.TransitionToRunning(ctx, session.ID, 200, 6000)
+	err := manager.TransitionToRunning(ctx, session.ID, 200, 6000, "0xdef456", time.Now())
 	if err == nil {
 		t.Fatal("Expected error when transitioning from STOPPED to RUNNING")
 	}
@@ -350,8 +355,10 @@ func TestTransitionToStopped_FromRunning_Success(t *testing.T) {
 
 	endTime := time.Now()
 	totalCost := "5000000000000000000" // 5 ETH
+	txHash := "0xstop123"
+	blockNum := uint64(6000)
 
-	err := manager.TransitionToStopped(ctx, session.ID, endTime, totalCost)
+	err := manager.TransitionToStopped(ctx, session.ID, endTime, totalCost, txHash, blockNum)
 	if err != nil {
 		t.Fatalf("TransitionToStopped failed: %v", err)
 	}
@@ -364,6 +371,12 @@ func TestTransitionToStopped_FromRunning_Success(t *testing.T) {
 	if updated.EndTime == nil {
 		t.Error("Expected EndTime to be set")
 	}
+	if updated.TxHash == nil || *updated.TxHash != txHash {
+		t.Errorf("Expected TxHash %s, got %v", txHash, updated.TxHash)
+	}
+	if updated.BlockNumber == nil || *updated.BlockNumber != blockNum {
+		t.Errorf("Expected BlockNumber %d, got %v", blockNum, updated.BlockNumber)
+	}
 }
 
 func TestTransitionToStopped_FromPending_Fails(t *testing.T) {
@@ -374,7 +387,7 @@ func TestTransitionToStopped_FromPending_Fails(t *testing.T) {
 	session := createTestSession(domain.RentalStatePending)
 	sessionRepo.sessions[session.ID] = session
 
-	err := manager.TransitionToStopped(ctx, session.ID, time.Now(), "0")
+	err := manager.TransitionToStopped(ctx, session.ID, time.Now(), "0", "0xhash", 1000)
 	if err == nil {
 		t.Fatal("Expected error when transitioning from PENDING to STOPPED")
 	}
@@ -512,12 +525,12 @@ func TestTransitionFromFailed_Blocked(t *testing.T) {
 	sessionRepo.sessions[session.ID] = session
 
 	// Try all possible transitions - all should fail
-	err := manager.TransitionToRunning(ctx, session.ID, 100, 5000)
+	err := manager.TransitionToRunning(ctx, session.ID, 100, 5000, "0xhash", time.Now())
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("FAILED -> RUNNING should fail with ErrInvalidTransition, got %v", err)
 	}
 
-	err = manager.TransitionToStopped(ctx, session.ID, time.Now(), "0")
+	err = manager.TransitionToStopped(ctx, session.ID, time.Now(), "0", "0xhash", 1000)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("FAILED -> STOPPED should fail with ErrInvalidTransition, got %v", err)
 	}
@@ -538,12 +551,12 @@ func TestTransitionFromCancelled_Blocked(t *testing.T) {
 	sessionRepo.sessions[session.ID] = session
 
 	// Try all possible transitions - all should fail
-	err := manager.TransitionToRunning(ctx, session.ID, 100, 5000)
+	err := manager.TransitionToRunning(ctx, session.ID, 100, 5000, "0xhash", time.Now())
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("CANCELLED -> RUNNING should fail with ErrInvalidTransition, got %v", err)
 	}
 
-	err = manager.TransitionToStopped(ctx, session.ID, time.Now(), "0")
+	err = manager.TransitionToStopped(ctx, session.ID, time.Now(), "0", "0xhash", 1000)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("CANCELLED -> STOPPED should fail with ErrInvalidTransition, got %v", err)
 	}
@@ -558,7 +571,7 @@ func TestSessionNotFound(t *testing.T) {
 	manager, _, _, _ := setupTestManager()
 	ctx := context.Background()
 
-	err := manager.TransitionToRunning(ctx, "nonexistent-session", 100, 5000)
+	err := manager.TransitionToRunning(ctx, "nonexistent-session", 100, 5000, "0xhash", time.Now())
 	if err == nil {
 		t.Fatal("Expected error when session not found")
 	}
