@@ -3,8 +3,21 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// BlockchainConfig holds blockchain connection settings for event listener
+type BlockchainConfig struct {
+	// RPCEndpoints contains WebSocket RPC endpoints for BNB Chain (comma-separated in env)
+	RPCEndpoints []string
+	// ContractAddress is the deployed WorldlandRental contract address
+	ContractAddress string
+	// DeploymentBlock is the block number when the contract was deployed (for initial backfill)
+	DeploymentBlock uint64
+	// ListenerEnabled toggles the event listener (useful for local development/testing)
+	ListenerEnabled bool
+}
 
 // Config holds application configuration
 type Config struct {
@@ -30,11 +43,23 @@ type Config struct {
 	// Auth
 	SIWEDomain string
 	SessionTTL time.Duration
+
+	// Blockchain
+	Blockchain BlockchainConfig
 }
 
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
 	dbPort, _ := strconv.Atoi(getEnv("DB_PORT", "5432"))
+	deploymentBlock, _ := strconv.ParseUint(getEnv("CONTRACT_DEPLOYMENT_BLOCK", "0"), 10, 64)
+	listenerEnabled := getEnv("BLOCKCHAIN_LISTENER_ENABLED", "true") == "true"
+
+	// Parse RPC endpoints (comma-separated)
+	rpcEndpointsStr := getEnv("BLOCKCHAIN_RPC_ENDPOINTS", "wss://bsc-ws-node.nariox.org:443")
+	rpcEndpoints := strings.Split(rpcEndpointsStr, ",")
+	for i := range rpcEndpoints {
+		rpcEndpoints[i] = strings.TrimSpace(rpcEndpoints[i])
+	}
 
 	return &Config{
 		DBHost:     getEnv("DB_HOST", "localhost"),
@@ -55,6 +80,13 @@ func LoadConfig() *Config {
 
 		SIWEDomain: getEnv("SIWE_DOMAIN", "hub.worldland.io"),
 		SessionTTL: 24 * time.Hour,
+
+		Blockchain: BlockchainConfig{
+			RPCEndpoints:    rpcEndpoints,
+			ContractAddress: getEnv("CONTRACT_ADDRESS", ""),
+			DeploymentBlock: deploymentBlock,
+			ListenerEnabled: listenerEnabled,
+		},
 	}
 }
 
