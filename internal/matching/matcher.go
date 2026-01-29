@@ -15,6 +15,12 @@ const (
 	MaxLimit     = 100
 )
 
+// Sort options
+const (
+	SortByPrice  = "price"
+	SortByMemory = "memory"
+)
+
 // NodeLister defines the interface for listing nodes (dependency injection)
 type NodeLister interface {
 	ListActive(ctx context.Context) ([]*domain.Node, error)
@@ -72,29 +78,8 @@ func (m *ProviderMatcher) FindProviders(ctx context.Context, req MatchRequest) (
 	// Store total count before pagination
 	totalCount := len(matched)
 
-	// Apply limit defaults
-	limit := req.Limit
-	if limit <= 0 {
-		limit = DefaultLimit
-	}
-	if limit > MaxLimit {
-		limit = MaxLimit
-	}
-
 	// Apply pagination
-	offset := req.Offset
-	if offset < 0 {
-		offset = 0
-	}
-
-	var paginatedNodes []*domain.Node
-	if offset < len(matched) {
-		end := offset + limit
-		if end > len(matched) {
-			end = len(matched)
-		}
-		paginatedNodes = matched[offset:end]
-	}
+	paginatedNodes := paginate(matched, req.Limit, req.Offset)
 
 	result := &MatchResult{
 		Nodes:      paginatedNodes,
@@ -107,6 +92,35 @@ func (m *ProviderMatcher) FindProviders(ctx context.Context, req MatchRequest) (
 	}
 
 	return result, nil
+}
+
+// paginate applies limit and offset to a slice of nodes
+func paginate(nodes []*domain.Node, limit, offset int) []*domain.Node {
+	// Apply limit defaults
+	if limit <= 0 {
+		limit = DefaultLimit
+	}
+	if limit > MaxLimit {
+		limit = MaxLimit
+	}
+
+	// Apply offset defaults
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Return empty if offset exceeds length
+	if offset >= len(nodes) {
+		return nil
+	}
+
+	// Calculate end index
+	end := offset + limit
+	if end > len(nodes) {
+		end = len(nodes)
+	}
+
+	return nodes[offset:end]
 }
 
 // applyFilters applies MinMemoryGB and MaxPricePerSecond filters
@@ -143,7 +157,7 @@ func (m *ProviderMatcher) applyFilters(nodes []*domain.Node, req MatchRequest) [
 // sortNodes sorts nodes by the specified criteria
 func (m *ProviderMatcher) sortNodes(nodes []*domain.Node, sortBy string) {
 	switch sortBy {
-	case "memory":
+	case SortByMemory:
 		// Sort by memory descending (highest memory first)
 		sort.Slice(nodes, func(i, j int) bool {
 			return nodes[i].MemoryGB > nodes[j].MemoryGB
