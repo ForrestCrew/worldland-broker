@@ -102,8 +102,8 @@ func TestProviderOnboardingFlow(t *testing.T) {
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
 
-	// Create router
-	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, sessionManager)
+	// Create router (pass nil for rental handler since we're not testing rentals here)
+	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, nil, sessionManager)
 
 	// === STEP 1: Get nonce (PROV-01) ===
 	t.Run("Step1_GetNonce", func(t *testing.T) {
