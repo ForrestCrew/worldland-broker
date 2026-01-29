@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: worldland
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: worldland_hub
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worldland"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  step-ca:
+    image: smallstep/step-ca:latest
+    ports:
+      - "9000:9000"
+    volumes:
+      - step_ca_data:/home/step
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "Worldland Dev CA"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "localhost,step-ca"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
+      DOCKER_STEPCA_INIT_ACME: "true"
+    healthcheck:
+      test: ["CMD", "step", "ca", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  step_ca_data:
