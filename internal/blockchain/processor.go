@@ -9,13 +9,20 @@ import (
 	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
-	"github.com/worldland/worldland-hub/internal/sessions"
 )
+
+// SessionTransitioner defines the interface for session state transitions.
+// This allows the EventProcessor to work with either the real SessionManager
+// or a mock for testing.
+type SessionTransitioner interface {
+	TransitionToRunning(ctx context.Context, sessionID string, rentalID uint64, blockNumber uint64, txHash string, startTime time.Time) error
+	TransitionToStopped(ctx context.Context, sessionID string, endTime time.Time, totalCost string, txHash string, blockNumber uint64) error
+}
 
 // EventProcessor handles blockchain events and updates session state.
 // It implements the EventHandler interface to receive events from EventListener.
 type EventProcessor struct {
-	sessionManager *sessions.SessionManager
+	sessionManager SessionTransitioner
 	sessionRepo    domain.RentalSessionRepository
 	logger         *slog.Logger
 }
@@ -25,7 +32,7 @@ var _ EventHandler = (*EventProcessor)(nil)
 
 // NewEventProcessor creates a new event processor with the required dependencies.
 func NewEventProcessor(
-	sessionManager *sessions.SessionManager,
+	sessionManager SessionTransitioner,
 	sessionRepo domain.RentalSessionRepository,
 	logger *slog.Logger,
 ) *EventProcessor {
