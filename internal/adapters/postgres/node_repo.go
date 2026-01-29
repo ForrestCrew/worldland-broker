@@ -168,3 +168,46 @@ func (r *PostgresNodeRepository) Delete(ctx context.Context, id string) error {
 
 	return nil
 }
+
+// ListActive retrieves all nodes with status 'active'
+// Implements matching.NodeLister interface for ProviderMatcher
+func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, status, certificate_expiry, created_at, updated_at
+		FROM nodes
+		WHERE status = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query, domain.NodeStatusActive)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list active nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []*domain.Node
+	for rows.Next() {
+		var node domain.Node
+		err := rows.Scan(
+			&node.ID,
+			&node.ProviderID,
+			&node.GPUUUID,
+			&node.GPUType,
+			&node.MemoryGB,
+			&node.PricePerSecond,
+			&node.Status,
+			&node.CertificateExpiry,
+			&node.CreatedAt,
+			&node.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan node: %w", err)
+		}
+		nodes = append(nodes, &node)
+	}
+
+	return nodes, nil
+}

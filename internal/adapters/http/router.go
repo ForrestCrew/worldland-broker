@@ -11,6 +11,7 @@ func NewRouter(
 	authHandler *AuthHandler,
 	nodeHandler *NodeHandler,
 	certHandler *CertHandler,
+	rentalHandler *RentalHandler,
 	sessionManager *auth.SessionManager,
 ) *gin.Engine {
 	router := gin.Default()
@@ -47,6 +48,15 @@ func NewRouter(
 
 			// Certificate endpoint (PROV-02 mTLS)
 			protected.POST("/nodes/:id/certificate", certHandler.IssueCertificate)
+
+			// Rental endpoints (03-07)
+			rentals := protected.Group("/rentals")
+			{
+				rentals.POST("/providers", rentalHandler.FindProviders) // Search providers
+				rentals.POST("", rentalHandler.CreateSession)           // Create session
+				rentals.GET("", rentalHandler.ListSessions)             // List user sessions
+				rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
+			}
 		}
 	}
 

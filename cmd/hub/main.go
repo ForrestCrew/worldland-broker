@@ -24,7 +24,9 @@ import (
 	"github.com/worldland/worldland-hub/internal/auth"
 	"github.com/worldland/worldland-hub/internal/config"
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/services"
+	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
 func main() {
@@ -68,13 +70,21 @@ func main() {
 	}
 	log.Println("Certificate service initialized")
 
+	// Initialize rental session repository
+	rentalSessionRepo := postgres.NewRentalSessionRepository(dbPool)
+
+	// Initialize rental services
+	rentalSessionManager := sessions.NewSessionManager(rentalSessionRepo, nodeRepo, providerRepo)
+	providerMatcher := matching.NewProviderMatcher(nodeRepo)
+
 	// Initialize HTTP handlers
 	authHandler := httpAdapter.NewAuthHandler(siweVerifier, sessionManager, nonceRepo, providerRepo)
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
+	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo)
 
 	// Create router
-	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, sessionManager)
+	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, sessionManager)
 
 	// Start HTTP server
 	httpServer := &http.Server{
