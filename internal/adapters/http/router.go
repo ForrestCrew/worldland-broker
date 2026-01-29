@@ -50,12 +50,14 @@ func NewRouter(
 			protected.POST("/nodes/:id/certificate", certHandler.IssueCertificate)
 
 			// Rental endpoints (03-07)
-			rentals := protected.Group("/rentals")
-			{
-				rentals.POST("/providers", rentalHandler.FindProviders) // Search providers
-				rentals.POST("", rentalHandler.CreateSession)           // Create session
-				rentals.GET("", rentalHandler.ListSessions)             // List user sessions
-				rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
+			if rentalHandler != nil {
+				rentals := protected.Group("/rentals")
+				{
+					rentals.POST("/providers", rentalHandler.FindProviders) // Search providers
+					rentals.POST("", rentalHandler.CreateSession)           // Create session
+					rentals.GET("", rentalHandler.ListSessions)             // List user sessions
+					rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
+				}
 			}
 		}
 	}

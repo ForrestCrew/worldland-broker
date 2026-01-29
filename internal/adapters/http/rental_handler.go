@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -249,7 +250,7 @@ func (h *RentalHandler) CancelSession(c *gin.Context) {
 
 	err = h.sessionManager.TransitionToCancelled(c.Request.Context(), sessionID)
 	if err != nil {
-		if err == sessions.ErrInvalidTransition {
+		if errors.Is(err, sessions.ErrInvalidTransition) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "can only cancel PENDING sessions"})
 			return
 		}
