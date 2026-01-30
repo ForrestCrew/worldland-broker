@@ -28,8 +28,8 @@ func (r *PostgresNodeRepository) Create(ctx context.Context, node *domain.Node) 
 	defer cancel()
 
 	query := `
-		INSERT INTO nodes (id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, status, certificate_expiry, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO nodes (id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 
 	_, err := r.pool.Exec(ctx, query,
@@ -39,6 +39,7 @@ func (r *PostgresNodeRepository) Create(ctx context.Context, node *domain.Node) 
 		node.GPUType,
 		node.MemoryGB,
 		node.PricePerSecond,
+		node.APIEndpoint,
 		node.Status,
 		node.CertificateExpiry,
 		node.CreatedAt,
@@ -58,7 +59,7 @@ func (r *PostgresNodeRepository) GetByID(ctx context.Context, id string) (*domai
 	defer cancel()
 
 	query := `
-		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, status, certificate_expiry, created_at, updated_at
+		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at
 		FROM nodes
 		WHERE id = $1
 	`
@@ -71,6 +72,7 @@ func (r *PostgresNodeRepository) GetByID(ctx context.Context, id string) (*domai
 		&node.GPUType,
 		&node.MemoryGB,
 		&node.PricePerSecond,
+		&node.APIEndpoint,
 		&node.Status,
 		&node.CertificateExpiry,
 		&node.CreatedAt,
@@ -90,7 +92,7 @@ func (r *PostgresNodeRepository) GetByProvider(ctx context.Context, providerID s
 	defer cancel()
 
 	query := `
-		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, status, certificate_expiry, created_at, updated_at
+		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at
 		FROM nodes
 		WHERE provider_id = $1
 		ORDER BY created_at DESC
@@ -112,6 +114,7 @@ func (r *PostgresNodeRepository) GetByProvider(ctx context.Context, providerID s
 			&node.GPUType,
 			&node.MemoryGB,
 			&node.PricePerSecond,
+			&node.APIEndpoint,
 			&node.Status,
 			&node.CertificateExpiry,
 			&node.CreatedAt,
@@ -133,7 +136,7 @@ func (r *PostgresNodeRepository) Update(ctx context.Context, node *domain.Node) 
 
 	query := `
 		UPDATE nodes
-		SET gpu_type = $2, memory_gb = $3, price_per_second = $4, status = $5, certificate_expiry = $6, updated_at = $7
+		SET gpu_type = $2, memory_gb = $3, price_per_second = $4, api_endpoint = $5, status = $6, certificate_expiry = $7, updated_at = $8
 		WHERE id = $1
 	`
 
@@ -142,6 +145,7 @@ func (r *PostgresNodeRepository) Update(ctx context.Context, node *domain.Node) 
 		node.GPUType,
 		node.MemoryGB,
 		node.PricePerSecond,
+		node.APIEndpoint,
 		node.Status,
 		node.CertificateExpiry,
 		node.UpdatedAt,
@@ -176,7 +180,7 @@ func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node
 	defer cancel()
 
 	query := `
-		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, status, certificate_expiry, created_at, updated_at
+		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at
 		FROM nodes
 		WHERE status = $1
 		ORDER BY created_at DESC
@@ -198,6 +202,7 @@ func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node
 			&node.GPUType,
 			&node.MemoryGB,
 			&node.PricePerSecond,
+			&node.APIEndpoint,
 			&node.Status,
 			&node.CertificateExpiry,
 			&node.CreatedAt,

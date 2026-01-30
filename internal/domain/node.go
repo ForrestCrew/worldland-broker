@@ -19,6 +19,7 @@ type Node struct {
 	GPUType           string     `json:"gpuType"`
 	MemoryGB          int        `json:"memoryGb"`
 	PricePerSecond    string     `json:"pricePerSecond"` // Decimal string for precision
+	APIEndpoint       string     `json:"apiEndpoint"`    // mTLS HTTPS endpoint for Hub-to-Node communication
 	Status            NodeStatus `json:"status"`
 	CertificateExpiry *time.Time `json:"certificateExpiry,omitempty"`
 	CreatedAt         time.Time  `json:"createdAt"`
