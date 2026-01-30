@@ -16,6 +16,7 @@ import (
 	httpAdapter "github.com/worldland/worldland-hub/internal/adapters/http"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/matching"
+	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
@@ -179,6 +180,28 @@ func (m *rentalMockProviderRepo) Update(ctx context.Context, provider *domain.Pr
 	return nil
 }
 
+// Mock NodeClient for testing
+type mockNodeClient struct {
+	startRentalResp *rental.StartRentalResponse
+	startRentalErr  error
+	stopRentalResp  *rental.StopRentalResponse
+	stopRentalErr   error
+}
+
+func (m *mockNodeClient) StartRental(ctx context.Context, nodeURL string, req rental.StartRentalRequest) (*rental.StartRentalResponse, error) {
+	if m.startRentalErr != nil {
+		return nil, m.startRentalErr
+	}
+	return m.startRentalResp, nil
+}
+
+func (m *mockNodeClient) StopRental(ctx context.Context, nodeURL string, req rental.StopRentalRequest) (*rental.StopRentalResponse, error) {
+	if m.stopRentalErr != nil {
+		return nil, m.stopRentalErr
+	}
+	return m.stopRentalResp, nil
+}
+
 // Helper to setup test router with mock middleware
 func setupRentalTestRouter(handler *httpAdapter.RentalHandler, providerID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
@@ -200,6 +223,8 @@ func setupRentalTestRouter(handler *httpAdapter.RentalHandler, providerID string
 		rentals.POST("", handler.CreateSession)
 		rentals.GET("", handler.ListSessions)
 		rentals.DELETE("/:id", handler.CancelSession)
+		rentals.POST("/:id/start", handler.HandleStartRental) // 04-05
+		rentals.POST("/:id/stop", handler.HandleStopRental)   // 04-05
 	}
 
 	return router
@@ -228,7 +253,7 @@ func TestFindProviders_ReturnsMatchingNodes(t *testing.T) {
 
 	nodeLister := &rentalMockNodeLister{nodes: nodes}
 	matcher := matching.NewProviderMatcher(nodeLister)
-	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "")
 
 	reqBody := map[string]interface{}{
@@ -255,7 +280,7 @@ func TestFindProviders_ReturnsMatchingNodes(t *testing.T) {
 func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
 	nodeLister := &rentalMockNodeLister{nodes: []*domain.Node{}}
 	matcher := matching.NewProviderMatcher(nodeLister)
-	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "")
 
 	// Missing required gpuType field
@@ -273,7 +298,7 @@ func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
 }
 
 func TestCreateSession_AuthRequired(t *testing.T) {
-	handler := httpAdapter.NewRentalHandler(nil, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, nil, nil, nil, nil, nil)
 
 	// Setup router without auth (no provider_id set)
 	gin.SetMode(gin.TestMode)
@@ -320,7 +345,7 @@ func TestCreateSession_CreatesInPendingState(t *testing.T) {
 	sessionRepo := newRentalMockRentalSessionRepo()
 	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
 
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -363,7 +388,7 @@ func TestListSessions_ReturnsUserSessions(t *testing.T) {
 		CreatedAt:       time.Now(),
 	}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("GET", "/api/v1/rentals", nil)
@@ -400,7 +425,7 @@ func TestCancelSession_CancelsPending(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -434,7 +459,7 @@ func TestCancelSession_RejectsNonPending(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -469,7 +494,7 @@ func TestCancelSession_RejectsOtherUserSession(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -490,7 +515,7 @@ func TestCancelSession_SessionNotFound_Returns404(t *testing.T) {
 	sessionRepo := newRentalMockRentalSessionRepo() // Empty repo
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/nonexistent-session", nil)
@@ -498,4 +523,250 @@ func TestCancelSession_SessionNotFound_Returns404(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, nethttp.StatusNotFound, w.Code)
+}
+
+// Tests for 04-05: HandleStartRental and HandleStopRental
+
+func TestHandleStartRental_Success(t *testing.T) {
+	// Setup mocks
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:          "node-1",
+		GPUUUID:     "GPU-uuid-123",
+		APIEndpoint: "https://node.example.com:8443",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionRepo.sessions["session-1"] = &domain.RentalSession{
+		ID:              "session-1",
+		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
+		ProviderAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+		NodeID:          "node-1",
+		State:           domain.RentalStatePending,
+		PricePerSecond:  "1000000000000000",
+		CreatedAt:       time.Now(),
+	}
+
+	nodeClient := &mockNodeClient{
+		startRentalResp: &rental.StartRentalResponse{
+			SessionID:  "session-1",
+			SSHHost:    "node.example.com",
+			SSHPort:    30001,
+			SSHUser:    "ubuntu",
+			SSHCommand: "ssh -p 30001 ubuntu@node.example.com",
+		},
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"sshPublicKey": "ssh-rsa AAAA...",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/start", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-1", resp["sessionId"])
+	assert.Equal(t, "node.example.com", resp["sshHost"])
+	assert.Equal(t, float64(30001), resp["sshPort"])
+	assert.Equal(t, "ubuntu", resp["sshUser"])
+	assert.Contains(t, resp["message"], "started")
+}
+
+func TestHandleStartRental_SessionNotFound_Returns404(t *testing.T) {
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo() // Empty
+	nodeRepo := newRentalMockNodeRepo()
+	nodeClient := &mockNodeClient{}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"sshPublicKey": "ssh-rsa AAAA...",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/nonexistent/start", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusNotFound, w.Code)
+}
+
+func TestHandleStartRental_NotAuthorized_Returns403(t *testing.T) {
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionRepo.sessions["session-1"] = &domain.RentalSession{
+		ID:              "session-1",
+		UserAddress:     "0x9999999999999999999999999999999999999999", // Different user
+		ProviderAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+		NodeID:          "node-1",
+		State:           domain.RentalStatePending,
+		CreatedAt:       time.Now(),
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeClient := &mockNodeClient{}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"sshPublicKey": "ssh-rsa AAAA...",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/start", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusForbidden, w.Code)
+}
+
+func TestHandleStartRental_NodeUnreachable_Returns502(t *testing.T) {
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:          "node-1",
+		GPUUUID:     "GPU-uuid-123",
+		APIEndpoint: "https://node.example.com:8443",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionRepo.sessions["session-1"] = &domain.RentalSession{
+		ID:              "session-1",
+		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
+		NodeID:          "node-1",
+		State:           domain.RentalStatePending,
+		CreatedAt:       time.Now(),
+	}
+
+	nodeClient := &mockNodeClient{
+		startRentalErr: rental.ErrNodeUnreachable,
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"sshPublicKey": "ssh-rsa AAAA...",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/start", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusBadGateway, w.Code)
+}
+
+func TestHandleStopRental_Success(t *testing.T) {
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:          "node-1",
+		GPUUUID:     "GPU-uuid-123",
+		APIEndpoint: "https://node.example.com:8443",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionRepo.sessions["session-1"] = &domain.RentalSession{
+		ID:              "session-1",
+		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
+		NodeID:          "node-1",
+		State:           domain.RentalStateRunning, // Must be RUNNING to stop
+		CreatedAt:       time.Now(),
+	}
+
+	nodeClient := &mockNodeClient{
+		stopRentalResp: &rental.StopRentalResponse{
+			SessionID: "session-1",
+			Message:   "Rental stopped",
+		},
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/stop", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-1", resp["sessionId"])
+	assert.Contains(t, resp["message"], "stop")
+}
+
+func TestHandleStopRental_NotRunning_Returns400(t *testing.T) {
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionRepo.sessions["session-1"] = &domain.RentalSession{
+		ID:              "session-1",
+		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
+		NodeID:          "node-1",
+		State:           domain.RentalStatePending, // Not RUNNING
+		CreatedAt:       time.Now(),
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeClient := &mockNodeClient{}
+
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/stop", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusBadRequest, w.Code)
 }

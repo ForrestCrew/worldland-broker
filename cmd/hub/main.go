@@ -28,6 +28,7 @@ import (
 	"github.com/worldland/worldland-hub/internal/config"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/matching"
+	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
 	"github.com/worldland/worldland-hub/internal/sessions"
 )
@@ -120,11 +121,18 @@ func main() {
 	// Initialize timeout enforcer for stale session cleanup
 	timeoutEnforcer := sessions.NewTimeoutEnforcer(rentalSessionManager, rentalSessionRepo, logger)
 
+	// Initialize Node client for Hub-to-Node communication (04-05)
+	// For now, use nil TLSConfig - will be configured with mTLS in production
+	nodeClient := rental.NewNodeClient(rental.NodeClientConfig{
+		TLSConfig: nil, // TODO: Configure mTLS for Hub-to-Node communication
+		Timeout:   2 * time.Minute,
+	})
+
 	// Initialize HTTP handlers
 	authHandler := httpAdapter.NewAuthHandler(siweVerifier, sessionManager, nonceRepo, providerRepo)
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
-	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo)
+	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient)
 
 	// Create router
 	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, sessionManager)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/matching"
+	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
@@ -19,6 +20,8 @@ type RentalHandler struct {
 	sessionManager *sessions.SessionManager
 	sessionRepo    domain.RentalSessionRepository
 	providerRepo   domain.ProviderRepository
+	nodeRepo       domain.NodeRepository
+	nodeClient     rental.NodeClientInterface
 }
 
 // NewRentalHandler creates a new rental handler
@@ -27,12 +30,16 @@ func NewRentalHandler(
 	sessionManager *sessions.SessionManager,
 	sessionRepo domain.RentalSessionRepository,
 	providerRepo domain.ProviderRepository,
+	nodeRepo domain.NodeRepository,
+	nodeClient rental.NodeClientInterface,
 ) *RentalHandler {
 	return &RentalHandler{
 		matcher:        matcher,
 		sessionManager: sessionManager,
 		sessionRepo:    sessionRepo,
 		providerRepo:   providerRepo,
+		nodeRepo:       nodeRepo,
+		nodeClient:     nodeClient,
 	}
 }
 
@@ -259,6 +266,186 @@ func (h *RentalHandler) CancelSession(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "session cancelled"})
+}
+
+// StartRentalRequest represents a request to start a rental
+type StartRentalRequest struct {
+	SSHPublicKey string `json:"sshPublicKey" binding:"required"`
+}
+
+// StartRentalResponse represents the response with connection info
+type StartRentalResponse struct {
+	SessionID  string `json:"sessionId"`
+	SSHHost    string `json:"sshHost"`
+	SSHPort    int    `json:"sshPort"`
+	SSHUser    string `json:"sshUser"`
+	SSHCommand string `json:"sshCommand"`
+	Message    string `json:"message"`
+}
+
+// HandleStartRental handles POST /api/v1/rentals/:id/start
+// Calls Node to start the GPU container and returns SSH connection info
+func (h *RentalHandler) HandleStartRental(c *gin.Context) {
+	sessionID := c.Param("id")
+
+	// Get authenticated user
+	providerID, exists := c.Get("provider_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	// Load session and verify ownership
+	session, err := h.sessionRepo.GetByID(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.UserAddress != provider.WalletAddress {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+		return
+	}
+
+	if session.State != domain.RentalStatePending {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session not in PENDING state"})
+		return
+	}
+
+	// Parse request for SSH key
+	var req StartRentalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sshPublicKey required"})
+		return
+	}
+
+	// Lookup Node to get URL and GPU info
+	node, err := h.nodeRepo.GetByID(c.Request.Context(), session.NodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "node not found"})
+		return
+	}
+
+	if node.APIEndpoint == "" {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "node API endpoint not configured"})
+		return
+	}
+
+	// Call Node to start container
+	nodeReq := rental.StartRentalRequest{
+		SessionID:    sessionID,
+		GPUDeviceID:  node.GPUUUID,
+		SSHPublicKey: req.SSHPublicKey,
+		Image:        "nvidia/cuda:12.1-runtime-ubuntu22.04", // Default image
+		MemoryBytes:  8 * 1024 * 1024 * 1024,                 // 8GB default
+		CPUCount:     4,                                      // 4 CPUs default
+	}
+
+	nodeResp, err := h.nodeClient.StartRental(c.Request.Context(), node.APIEndpoint, nodeReq)
+	if err != nil {
+		if errors.Is(err, rental.ErrNodeUnreachable) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "node unreachable", "details": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to start rental on node", "details": err.Error()})
+		return
+	}
+
+	// Return connection info to user
+	c.JSON(http.StatusOK, StartRentalResponse{
+		SessionID:  sessionID,
+		SSHHost:    nodeResp.SSHHost,
+		SSHPort:    nodeResp.SSHPort,
+		SSHUser:    nodeResp.SSHUser,
+		SSHCommand: nodeResp.SSHCommand,
+		Message:    "Rental started. SSH into the container using the provided command.",
+	})
+}
+
+// StopRentalRequest represents a request to stop a rental
+type StopRentalRequest struct {
+	// Empty for now, may add reason field later
+}
+
+// StopRentalResponse represents the response after stopping
+type StopRentalResponse struct {
+	SessionID string `json:"sessionId"`
+	Message   string `json:"message"`
+}
+
+// HandleStopRental handles POST /api/v1/rentals/:id/stop
+// Calls Node to stop the GPU container
+func (h *RentalHandler) HandleStopRental(c *gin.Context) {
+	sessionID := c.Param("id")
+
+	// Get authenticated user
+	providerID, exists := c.Get("provider_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	// Load session and verify ownership
+	session, err := h.sessionRepo.GetByID(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.UserAddress != provider.WalletAddress {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+		return
+	}
+
+	if session.State != domain.RentalStateRunning {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session not in RUNNING state"})
+		return
+	}
+
+	// Lookup Node to get URL
+	node, err := h.nodeRepo.GetByID(c.Request.Context(), session.NodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "node not found"})
+		return
+	}
+
+	if node.APIEndpoint == "" {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "node API endpoint not configured"})
+		return
+	}
+
+	// Call Node to stop container
+	nodeReq := rental.StopRentalRequest{
+		SessionID: sessionID,
+	}
+
+	_, err = h.nodeClient.StopRental(c.Request.Context(), node.APIEndpoint, nodeReq)
+	if err != nil {
+		if errors.Is(err, rental.ErrNodeUnreachable) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "node unreachable", "details": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to stop rental on node", "details": err.Error()})
+		return
+	}
+
+	// Return success
+	c.JSON(http.StatusOK, StopRentalResponse{
+		SessionID: sessionID,
+		Message:   "Rental stop initiated. Container will be stopped shortly.",
+	})
 }
 
 // Helper functions for conversion

@@ -49,7 +49,7 @@ func NewRouter(
 			// Certificate endpoint (PROV-02 mTLS)
 			protected.POST("/nodes/:id/certificate", certHandler.IssueCertificate)
 
-			// Rental endpoints (03-07)
+			// Rental endpoints (03-07, 04-05)
 			if rentalHandler != nil {
 				rentals := protected.Group("/rentals")
 				{
@@ -57,6 +57,8 @@ func NewRouter(
 					rentals.POST("", rentalHandler.CreateSession)           // Create session
 					rentals.GET("", rentalHandler.ListSessions)             // List user sessions
 					rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
+					rentals.POST("/:id/start", rentalHandler.HandleStartRental) // Start rental (04-05)
+					rentals.POST("/:id/stop", rentalHandler.HandleStopRental)   // Stop rental (04-05)
 				}
 			}
 		}

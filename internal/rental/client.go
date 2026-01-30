@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// NodeClientInterface defines the interface for Hub-to-Node communication
+type NodeClientInterface interface {
+	StartRental(ctx context.Context, nodeURL string, req StartRentalRequest) (*StartRentalResponse, error)
+	StopRental(ctx context.Context, nodeURL string, req StopRentalRequest) (*StopRentalResponse, error)
+}
+
 var (
 	ErrNodeUnreachable     = errors.New("node unreachable")
 	ErrNodeStartFailed     = errors.New("node failed to start rental")
