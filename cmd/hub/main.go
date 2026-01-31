@@ -97,7 +97,8 @@ func main() {
 	providerMatcher := matching.NewProviderMatcher(nodeRepo)
 
 	// Initialize blockchain components
-	checkpointStore := blockchain.NewCheckpointStore(dbPool)
+	// Hub uses 'rental_events' checkpoint; standalone indexer uses 'indexer_events'
+	checkpointStore := blockchain.NewCheckpointStore(dbPool, "rental_events")
 	eventProcessor := blockchain.NewEventProcessor(rentalSessionManager, rentalSessionRepo, logger)
 
 	// Initialize event listener (if enabled and contract address configured)

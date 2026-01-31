@@ -11,12 +11,18 @@ import (
 // CheckpointStore manages event processing checkpoint and idempotency.
 // It tracks the last successfully processed block and ensures events are not processed twice.
 type CheckpointStore struct {
-	db *pgxpool.Pool
+	db           *pgxpool.Pool
+	checkpointID string
 }
 
-// NewCheckpointStore creates a new checkpoint store with the given database pool.
-func NewCheckpointStore(db *pgxpool.Pool) *CheckpointStore {
-	return &CheckpointStore{db: db}
+// NewCheckpointStore creates a new checkpoint store with the given database pool and checkpoint ID.
+// Use 'rental_events' for Hub, 'indexer_events' for the standalone indexer.
+// This allows Hub and Indexer to maintain independent checkpoints.
+func NewCheckpointStore(db *pgxpool.Pool, checkpointID string) *CheckpointStore {
+	return &CheckpointStore{
+		db:           db,
+		checkpointID: checkpointID,
+	}
 }
 
 // GetLastProcessedBlock returns the last successfully processed block number.
@@ -24,7 +30,7 @@ func NewCheckpointStore(db *pgxpool.Pool) *CheckpointStore {
 func (s *CheckpointStore) GetLastProcessedBlock(ctx context.Context) (uint64, error) {
 	var blockNum int64
 	err := s.db.QueryRow(ctx,
-		"SELECT block_number FROM event_checkpoint WHERE id = 'rental_events'",
+		"SELECT block_number FROM event_checkpoint WHERE id = $1", s.checkpointID,
 	).Scan(&blockNum)
 	if err != nil {
 		return 0, fmt.Errorf("get checkpoint: %w", err)
@@ -39,8 +45,8 @@ func (s *CheckpointStore) UpdateCheckpoint(ctx context.Context, blockNumber uint
 	_, err := s.db.Exec(ctx, `
 		UPDATE event_checkpoint
 		SET block_number = $1, updated_at = NOW()
-		WHERE id = 'rental_events' AND block_number < $1
-	`, blockNumber)
+		WHERE id = $2 AND block_number < $1
+	`, blockNumber, s.checkpointID)
 	return err
 }
 
