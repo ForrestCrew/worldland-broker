@@ -30,6 +30,8 @@ const (
 type EventHandler interface {
 	HandleRentalStarted(ctx context.Context, event *RentalStartedEvent) error
 	HandleRentalStopped(ctx context.Context, event *RentalStoppedEvent) error
+	HandleDeposited(ctx context.Context, event *DepositedEvent) error
+	HandleWithdrawn(ctx context.Context, event *WithdrawnEvent) error
 }
 
 // EthClient defines the interface for Ethereum client operations.
@@ -249,8 +251,24 @@ func (l *EventListener) processLog(ctx context.Context, vLog types.Log) error {
 			processErr = l.handler.HandleRentalStopped(ctx, event)
 		}
 
+	case EventTypeDeposited:
+		event, err := ParseDeposited(vLog)
+		if err != nil {
+			processErr = fmt.Errorf("parse Deposited: %w", err)
+		} else {
+			processErr = l.handler.HandleDeposited(ctx, event)
+		}
+
+	case EventTypeWithdrawn:
+		event, err := ParseWithdrawn(vLog)
+		if err != nil {
+			processErr = fmt.Errorf("parse Withdrawn: %w", err)
+		} else {
+			processErr = l.handler.HandleWithdrawn(ctx, event)
+		}
+
 	default:
-		// Unknown or non-rental event, skip silently
+		// Unknown event, skip silently
 		return nil
 	}
 

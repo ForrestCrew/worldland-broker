@@ -136,6 +136,32 @@ func (p *EventProcessor) HandleRentalStopped(ctx context.Context, event *RentalS
 	return nil
 }
 
+// HandleDeposited processes Deposited events from the blockchain.
+// The EventProcessor for session management does not handle deposit events,
+// as they don't affect session state. This is a no-op implementation.
+// The IndexerProcessor in internal/indexer handles deposit event storage.
+func (p *EventProcessor) HandleDeposited(ctx context.Context, event *DepositedEvent) error {
+	p.logger.Debug("ignoring Deposited event in session processor",
+		"user", event.User.Hex(),
+		"amount", event.Amount.String(),
+		"block", event.BlockNumber,
+	)
+	return nil
+}
+
+// HandleWithdrawn processes Withdrawn events from the blockchain.
+// The EventProcessor for session management does not handle withdraw events,
+// as they don't affect session state. This is a no-op implementation.
+// The IndexerProcessor in internal/indexer handles withdraw event storage.
+func (p *EventProcessor) HandleWithdrawn(ctx context.Context, event *WithdrawnEvent) error {
+	p.logger.Debug("ignoring Withdrawn event in session processor",
+		"user", event.User.Hex(),
+		"amount", event.Amount.String(),
+		"block", event.BlockNumber,
+	)
+	return nil
+}
+
 // findPendingSession finds a PENDING session matching user and provider addresses.
 // Returns the first matching session or an error if none found.
 func (p *EventProcessor) findPendingSession(ctx context.Context, userAddr, providerAddr string) (*domain.RentalSession, error) {
