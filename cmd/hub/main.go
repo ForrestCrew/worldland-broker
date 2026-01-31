@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	httpAdapter "github.com/worldland/worldland-hub/internal/adapters/http"
 	"github.com/worldland/worldland-hub/internal/adapters/mtls"
@@ -26,11 +28,13 @@ import (
 	"github.com/worldland/worldland-hub/internal/auth"
 	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/config"
+	"github.com/worldland/worldland-hub/internal/indexer"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
 	"github.com/worldland/worldland-hub/internal/sessions"
+	"github.com/worldland/worldland-hub/internal/settlement"
 )
 
 func main() {
@@ -121,21 +125,72 @@ func main() {
 	// Initialize timeout enforcer for stale session cleanup
 	timeoutEnforcer := sessions.NewTimeoutEnforcer(rentalSessionManager, rentalSessionRepo, logger)
 
+	// Initialize settlement calculator and batch processor (04-07)
+	settlementCalculator := settlement.NewCalculator(rentalSessionRepo)
+	// TODO (DEBT-03): Implement ContractTransferer when contract SDK available
+	// For now, pass nil - blockchain transfer is optional, DB is source of truth
+	var contractTransferer settlement.ContractTransferer // nil
+	if contractTransferer != nil {
+		logger.Info("Blockchain settlement transfer enabled")
+	} else {
+		logger.Info("Blockchain settlement transfer disabled (no ContractTransferer)")
+	}
+	batchProcessor := settlement.NewBatchProcessor(
+		settlementCalculator,
+		rentalSessionRepo,
+		contractTransferer,
+		logger,
+	)
+
 	// Initialize Node client for Hub-to-Node communication (04-05)
-	// For now, use nil TLSConfig - will be configured with mTLS in production
+	// Load mTLS certificates for secure Hub-to-Node communication (DEBT-01)
+	nodeTLSConfig, err := loadNodeClientTLS(cfg, logger)
+	if err != nil {
+		logger.Error("Failed to load Node client TLS config", "error", err)
+		os.Exit(1)
+	}
 	nodeClient := rental.NewNodeClient(rental.NodeClientConfig{
-		TLSConfig: nil, // TODO: Configure mTLS for Hub-to-Node communication
+		TLSConfig: nodeTLSConfig,
 		Timeout:   2 * time.Minute,
 	})
+
+	// Initialize balance validator for on-chain deposit checks (06-06 DEBT-02)
+	var balanceValidator blockchain.BalanceValidatorInterface
+	if cfg.Blockchain.ContractAddress != "" && cfg.Blockchain.HTTPRPCEndpoint != "" {
+		ethClient, err := ethclient.Dial(cfg.Blockchain.HTTPRPCEndpoint)
+		if err != nil {
+			logger.Error("Failed to connect to Ethereum RPC", "error", err)
+			// Non-fatal: balance validation will be skipped
+		} else {
+			contractAddr := common.HexToAddress(cfg.Blockchain.ContractAddress)
+			balanceValidator, err = blockchain.NewBalanceValidator(ethClient, contractAddr)
+			if err != nil {
+				logger.Error("Failed to create balance validator", "error", err)
+				// Non-fatal: balance validation will be skipped
+			} else {
+				logger.Info("Balance validator initialized",
+					"contract", cfg.Blockchain.ContractAddress,
+					"rpc", cfg.Blockchain.HTTPRPCEndpoint,
+				)
+			}
+		}
+	} else {
+		logger.Warn("Balance validator disabled (no contract address or HTTP RPC endpoint configured)")
+	}
 
 	// Initialize HTTP handlers
 	authHandler := httpAdapter.NewAuthHandler(siweVerifier, sessionManager, nonceRepo, providerRepo)
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
-	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient)
+	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient, balanceValidator)
+	balanceHandler := httpAdapter.NewBalanceHandler(settlementCalculator, rentalSessionRepo, providerRepo)
+
+	// Initialize query repository and history handler (09-04)
+	queryRepo := indexer.NewQueryRepository(dbPool)
+	historyHandler := httpAdapter.NewHistoryHandler(queryRepo)
 
 	// Create router
-	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, sessionManager)
+	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, balanceHandler, historyHandler, sessionManager)
 
 	// Start HTTP server
 	httpServer := &http.Server{
@@ -202,6 +257,13 @@ func main() {
 		logger.Info("Timeout enforcer stopped")
 	}()
 
+	// Batch settlement processor (always runs - 04-07)
+	go func() {
+		logger.Info("Starting batch settlement processor")
+		batchProcessor.Start(ctx)
+		logger.Info("Batch settlement processor stopped")
+	}()
+
 	logger.Info("Hub fully initialized",
 		"httpPort", cfg.ServerPort,
 		"mtlsPort", cfg.MTLSPort,
@@ -222,8 +284,17 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
+	// Graceful shutdown ordering:
+	// 1. Stop HTTP server (no new requests)
 	httpServer.Shutdown(shutdownCtx)
+
+	// 2. Stop batch processor (finish pending settlements)
+	logger.Info("stopping batch processor...")
+	batchProcessor.Stop()
+
+	// 3. Stop mTLS server
 	mtlsServer.Stop()
+
 	logger.Info("Shutdown complete")
 }
 
@@ -334,4 +405,65 @@ func generateDevServerCert() (tls.Certificate, error) {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// loadNodeClientTLS loads mTLS configuration for Hub-to-Node communication (DEBT-01)
+// Returns nil TLSConfig in development mode (when cert files don't exist)
+func loadNodeClientTLS(cfg *config.Config, logger *slog.Logger) (*tls.Config, error) {
+	// Check if certificate files exist
+	certExists := fileExists(cfg.NodeClientCertPath)
+	keyExists := fileExists(cfg.NodeClientKeyPath)
+	caExists := fileExists(cfg.CACertPath)
+
+	// Development mode fallback: if certs don't exist, use nil TLSConfig
+	if !certExists || !keyExists || !caExists {
+		logger.Warn("Node client mTLS certs not found, using insecure connection for development",
+			"certPath", cfg.NodeClientCertPath,
+			"keyPath", cfg.NodeClientKeyPath,
+			"caPath", cfg.CACertPath,
+			"certExists", certExists,
+			"keyExists", keyExists,
+			"caExists", caExists,
+		)
+		return nil, nil
+	}
+
+	// Load client certificate
+	cert, err := tls.LoadX509KeyPair(cfg.NodeClientCertPath, cfg.NodeClientKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load client certificate: %w", err)
+	}
+
+	// Load CA certificate pool
+	caCertPEM, err := os.ReadFile(cfg.CACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read CA certificate: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+		return nil, fmt.Errorf("failed to parse CA certificate")
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS13, // Per Phase 2 decision
+	}
+
+	logger.Info("Node client mTLS configured",
+		"certPath", cfg.NodeClientCertPath,
+		"caPath", cfg.CACertPath,
+	)
+
+	return tlsConfig, nil
+}
+
+// fileExists checks if a file exists and is not a directory
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }

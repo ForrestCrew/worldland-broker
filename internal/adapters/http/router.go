@@ -2,8 +2,9 @@ package http
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/worldland/worldland-hub/internal/adapters/http/middleware"
 	"github.com/worldland/worldland-hub/internal/auth"
-	"github.com/worldland/worldland-hub/internal/middleware"
+	intMiddleware "github.com/worldland/worldland-hub/internal/middleware"
 )
 
 // NewRouter creates a new Gin router with all routes configured
@@ -12,9 +13,15 @@ func NewRouter(
 	nodeHandler *NodeHandler,
 	certHandler *CertHandler,
 	rentalHandler *RentalHandler,
+	balanceHandler *BalanceHandler,
+	historyHandler *HistoryHandler,
 	sessionManager *auth.SessionManager,
 ) *gin.Engine {
 	router := gin.Default()
+
+	// CORS middleware - must be first
+	corsConfig := middleware.DefaultCORSConfig()
+	router.Use(middleware.CORSMiddleware(corsConfig))
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -36,7 +43,7 @@ func NewRouter(
 
 		// Protected endpoints (require valid session)
 		protected := v1.Group("")
-		protected.Use(middleware.AuthMiddleware(sessionManager))
+		protected.Use(intMiddleware.AuthMiddleware(sessionManager))
 		{
 			protected.POST("/auth/logout", authHandler.Logout)
 
@@ -61,6 +68,21 @@ func NewRouter(
 					rentals.POST("/:id/stop", rentalHandler.HandleStopRental)   // Stop rental (04-05)
 				}
 			}
+
+			// Balance endpoint (04-06)
+			if balanceHandler != nil {
+				protected.GET("/balance", balanceHandler.GetBalance)
+			}
+		}
+	}
+
+	// History endpoints (public - blockchain data is public)
+	// No authentication required - users query their own addresses
+	if historyHandler != nil {
+		history := router.Group("/api/history")
+		{
+			history.GET("/deposits-withdraws/:address", historyHandler.GetDepositWithdrawHistory)
+			history.GET("/rentals/:address", historyHandler.GetRentalHistory)
 		}
 	}
 

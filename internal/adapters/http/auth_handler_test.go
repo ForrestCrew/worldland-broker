@@ -237,8 +237,8 @@ func setupTestRouter() *gin.Engine {
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
 
-	// RentalHandler is nil for auth tests - rental routes won't be used
-	return httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, nil, sessionManager)
+	// RentalHandler, BalanceHandler, HistoryHandler are nil for auth tests - those routes won't be used
+	return httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, nil, nil, nil, sessionManager)
 }
 
 func TestGetNonce_ReturnsUniqueNonce(t *testing.T) {
