@@ -2,6 +2,7 @@
 package http
 
 import (
+	"context"
 	"math"
 	"strconv"
 	"time"
@@ -10,14 +11,40 @@ import (
 	"github.com/worldland/worldland-hub/internal/indexer"
 )
 
-// HistoryHandler handles history query HTTP requests.
-type HistoryHandler struct {
-	queryRepo *indexer.QueryRepository
+// HistoryQuerier defines the interface for querying history data.
+// This allows for easy mocking in tests.
+type HistoryQuerier interface {
+	GetDepositWithdrawHistory(
+		ctx context.Context,
+		address string,
+		afterTimestamp time.Time,
+		afterID int64,
+		limit int,
+	) (*indexer.DepositWithdrawHistoryResponse, error)
+
+	GetRentalHistory(
+		ctx context.Context,
+		address string,
+		afterTimestamp time.Time,
+		afterID int64,
+		limit int,
+	) (*indexer.RentalHistoryResponse, error)
 }
 
-// NewHistoryHandler creates a new history handler.
+// HistoryHandler handles history query HTTP requests.
+type HistoryHandler struct {
+	querier HistoryQuerier
+}
+
+// NewHistoryHandler creates a new history handler with a QueryRepository.
 func NewHistoryHandler(queryRepo *indexer.QueryRepository) *HistoryHandler {
-	return &HistoryHandler{queryRepo: queryRepo}
+	return &HistoryHandler{querier: queryRepo}
+}
+
+// NewHistoryHandlerWithQuerier creates a new history handler with a custom querier.
+// This is useful for testing with mock implementations.
+func NewHistoryHandlerWithQuerier(querier HistoryQuerier) *HistoryHandler {
+	return &HistoryHandler{querier: querier}
 }
 
 // GetDepositWithdrawHistory returns deposit/withdraw history for an address.
@@ -32,8 +59,8 @@ func (h *HistoryHandler) GetDepositWithdrawHistory(c *gin.Context) {
 	// Parse cursor params with defaults
 	afterTimestamp, afterID, limit := parseCursorParams(c)
 
-	// Query repository
-	response, err := h.queryRepo.GetDepositWithdrawHistory(
+	// Query via querier interface
+	response, err := h.querier.GetDepositWithdrawHistory(
 		c.Request.Context(),
 		address,
 		afterTimestamp,
@@ -60,8 +87,8 @@ func (h *HistoryHandler) GetRentalHistory(c *gin.Context) {
 	// Parse cursor params with defaults
 	afterTimestamp, afterID, limit := parseCursorParams(c)
 
-	// Query repository
-	response, err := h.queryRepo.GetRentalHistory(
+	// Query via querier interface
+	response, err := h.querier.GetRentalHistory(
 		c.Request.Context(),
 		address,
 		afterTimestamp,
