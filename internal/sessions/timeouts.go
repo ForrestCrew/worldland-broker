@@ -9,16 +9,16 @@ import (
 )
 
 const (
-	// PendingTimeout is how long a session can stay PENDING before failing
-	// PENDING sessions without a RentalStarted blockchain event are failed after this duration
-	PendingTimeout = 5 * time.Minute
+	// PendingTimeout is how long a session can stay PENDING before soft deletion
+	// PENDING sessions without tx_hash are soft-deleted after this duration (Phase 14 ADR-001)
+	PendingTimeout = 10 * time.Minute
 
 	// RunningTimeout is how long a RUNNING session can go without heartbeat before failing
 	// RUNNING sessions with no node heartbeat are failed after this duration
 	RunningTimeout = 30 * time.Second
 
-	// DefaultCheckInterval is how often to check for timeouts
-	DefaultCheckInterval = 30 * time.Second
+	// DefaultCheckInterval is how often to check for timeouts (Phase 14: updated to 1 minute)
+	DefaultCheckInterval = 1 * time.Minute
 )
 
 // SessionFailer defines the interface for failing sessions (for testability)
@@ -26,9 +26,16 @@ type SessionFailer interface {
 	TransitionToFailed(ctx context.Context, sessionID string, reason string) error
 }
 
+// SoftDeleter defines interface for soft-deleting expired sessions
+// SoftDeletePendingBefore excludes sessions with tx_hash (confirmation in progress)
+type SoftDeleter interface {
+	SoftDeletePendingBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
 // TimeoutEnforcer runs background timeout checks to fail stale sessions
 type TimeoutEnforcer struct {
 	failer        SessionFailer
+	softDeleter   SoftDeleter // for soft delete operations on PENDING sessions
 	repo          domain.RentalSessionRepository
 	checkInterval time.Duration
 	logger        *slog.Logger
@@ -36,15 +43,18 @@ type TimeoutEnforcer struct {
 
 // NewTimeoutEnforcer creates a new timeout enforcer
 // failer: typically a *SessionManager that can transition sessions to FAILED state
+// softDeleter: repository implementing SoftDeletePendingBefore (protects sessions with tx_hash)
 // repo: repository to find stale sessions
 // logger: structured logger for timeout events
 func NewTimeoutEnforcer(
 	failer SessionFailer,
+	softDeleter SoftDeleter,
 	repo domain.RentalSessionRepository,
 	logger *slog.Logger,
 ) *TimeoutEnforcer {
 	return &TimeoutEnforcer{
 		failer:        failer,
+		softDeleter:   softDeleter,
 		repo:          repo,
 		checkInterval: DefaultCheckInterval,
 		logger:        logger,
@@ -98,36 +108,25 @@ func (t *TimeoutEnforcer) checkTimeouts(ctx context.Context) error {
 	return nil
 }
 
-// enforcePendingTimeouts fails sessions that have been PENDING too long
-// Per CONTEXT.md: PENDING sessions without RentalStarted event within 5 minutes are failed
+// enforcePendingTimeouts soft-deletes PENDING sessions that have timed out
+// Per CONTEXT.md Phase 14: PENDING sessions without tx_hash older than 10 minutes are soft-deleted
+// Sessions with tx_hash set are preserved (confirmation in progress per RESEARCH.md Pitfall #3)
 func (t *TimeoutEnforcer) enforcePendingTimeouts(ctx context.Context) error {
-	staleSessions, err := t.repo.FindStale(ctx, domain.RentalStatePending, PendingTimeout)
+	cutoff := time.Now().Add(-PendingTimeout)
+
+	// Use soft delete instead of TransitionToFailed
+	// SoftDeletePendingBefore excludes sessions with tx_hash (confirmation in progress)
+	count, err := t.softDeleter.SoftDeletePendingBefore(ctx, cutoff)
 	if err != nil {
+		t.logger.Error("failed to soft delete expired PENDING sessions", "error", err)
 		return err
 	}
 
-	for _, session := range staleSessions {
-		t.logger.Info("failing stale PENDING session",
-			"sessionId", session.ID,
-			"createdAt", session.CreatedAt,
-			"age", time.Since(session.CreatedAt),
+	if count > 0 {
+		t.logger.Info("TTL cleanup: soft deleted expired PENDING sessions",
+			"count", count,
+			"cutoffAge", PendingTimeout,
 		)
-
-		transitionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := t.failer.TransitionToFailed(transitionCtx, session.ID, "PENDING timeout: no RentalStarted event received")
-		cancel()
-
-		if err != nil {
-			t.logger.Error("failed to transition stale PENDING session",
-				"sessionId", session.ID,
-				"error", err,
-			)
-			// Continue to next session - don't let one failure stop others
-		}
-	}
-
-	if len(staleSessions) > 0 {
-		t.logger.Info("pending timeout check complete", "failedCount", len(staleSessions))
 	}
 
 	return nil
