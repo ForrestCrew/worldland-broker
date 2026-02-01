@@ -124,7 +124,8 @@ func main() {
 	}
 
 	// Initialize timeout enforcer for stale session cleanup
-	timeoutEnforcer := sessions.NewTimeoutEnforcer(rentalSessionManager, rentalSessionRepo, logger)
+	// rentalSessionRepo implements SoftDeleter via SoftDeletePendingBefore (Phase 14)
+	timeoutEnforcer := sessions.NewTimeoutEnforcer(rentalSessionManager, rentalSessionRepo, rentalSessionRepo, logger)
 
 	// Initialize settlement calculator and batch processor (04-07)
 	settlementCalculator := settlement.NewCalculator(rentalSessionRepo)
