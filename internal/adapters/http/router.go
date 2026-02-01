@@ -13,6 +13,7 @@ func NewRouter(
 	nodeHandler *NodeHandler,
 	certHandler *CertHandler,
 	rentalHandler *RentalHandler,
+	confirmationHandler *ConfirmationHandler,
 	balanceHandler *BalanceHandler,
 	historyHandler *HistoryHandler,
 	sessionManager *auth.SessionManager,
@@ -56,7 +57,7 @@ func NewRouter(
 			// Certificate endpoint (PROV-02 mTLS)
 			protected.POST("/nodes/:id/certificate", certHandler.IssueCertificate)
 
-			// Rental endpoints (03-07, 04-05)
+			// Rental endpoints (03-07, 04-05, 14-03)
 			if rentalHandler != nil {
 				rentals := protected.Group("/rentals")
 				{
@@ -66,6 +67,12 @@ func NewRouter(
 					rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
 					rentals.POST("/:id/start", rentalHandler.HandleStartRental) // Start rental (04-05)
 					rentals.POST("/:id/stop", rentalHandler.HandleStopRental)   // Stop rental (04-05)
+
+					// Confirmation endpoints (14-03 ADR-001)
+					if confirmationHandler != nil {
+						rentals.POST("/:id/confirm", confirmationHandler.ConfirmRental) // Confirm with txHash
+						rentals.GET("/:id", confirmationHandler.GetSession)             // Get session status
+					}
 				}
 			}
 

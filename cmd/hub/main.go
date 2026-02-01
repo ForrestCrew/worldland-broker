@@ -156,13 +156,14 @@ func main() {
 		Timeout:   2 * time.Minute,
 	})
 
-	// Initialize balance validator for on-chain deposit checks (06-06 DEBT-02)
+	// Initialize balance validator and transaction verifier for on-chain checks (06-06, 14-03)
 	var balanceValidator blockchain.BalanceValidatorInterface
+	var transactionVerifier *blockchain.TransactionVerifier
 	if cfg.Blockchain.ContractAddress != "" && cfg.Blockchain.HTTPRPCEndpoint != "" {
 		ethClient, err := ethclient.Dial(cfg.Blockchain.HTTPRPCEndpoint)
 		if err != nil {
 			logger.Error("Failed to connect to Ethereum RPC", "error", err)
-			// Non-fatal: balance validation will be skipped
+			// Non-fatal: balance validation and tx verification will be skipped
 		} else {
 			contractAddr := common.HexToAddress(cfg.Blockchain.ContractAddress)
 			balanceValidator, err = blockchain.NewBalanceValidator(ethClient, contractAddr)
@@ -175,9 +176,15 @@ func main() {
 					"rpc", cfg.Blockchain.HTTPRPCEndpoint,
 				)
 			}
+
+			// Initialize transaction verifier for confirmation worker (14-03 ADR-001)
+			transactionVerifier = blockchain.NewTransactionVerifier(ethClient, contractAddr)
+			logger.Info("Transaction verifier initialized",
+				"contract", cfg.Blockchain.ContractAddress,
+			)
 		}
 	} else {
-		logger.Warn("Balance validator disabled (no contract address or HTTP RPC endpoint configured)")
+		logger.Warn("Balance validator and transaction verifier disabled (no contract address or HTTP RPC endpoint configured)")
 	}
 
 	// Initialize HTTP handlers
@@ -185,6 +192,10 @@ func main() {
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
 	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient, balanceValidator)
+
+	// Initialize confirmation handler (14-03 ADR-001)
+	confirmationHandler := httpAdapter.NewConfirmationHandler(rentalSessionRepo, providerRepo)
+
 	balanceHandler := httpAdapter.NewBalanceHandler(settlementCalculator, rentalSessionRepo, providerRepo)
 
 	// Initialize query repository and history handler (09-04)
@@ -192,7 +203,7 @@ func main() {
 	historyHandler := httpAdapter.NewHistoryHandler(queryRepo)
 
 	// Create router
-	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, balanceHandler, historyHandler, sessionManager)
+	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, sessionManager)
 
 	// Start HTTP server
 	httpServer := &http.Server{
@@ -265,6 +276,27 @@ func main() {
 		batchProcessor.Start(ctx)
 		logger.Info("Batch settlement processor stopped")
 	}()
+
+	// Confirmation worker for processing pending txHash verifications (14-03 ADR-001)
+	if transactionVerifier != nil {
+		confirmationWorker := sessions.NewConfirmationWorker(
+			rentalSessionRepo,
+			transactionVerifier,
+			rentalSessionManager,
+			nodeClient,
+			nodeRepo,
+			logger,
+		)
+		go func() {
+			logger.Info("Starting confirmation worker")
+			if err := confirmationWorker.Start(ctx); err != nil && err != context.Canceled {
+				logger.Error("Confirmation worker error", "error", err)
+			}
+			logger.Info("Confirmation worker stopped")
+		}()
+	} else {
+		logger.Warn("Confirmation worker disabled (no transaction verifier)")
+	}
 
 	logger.Info("Hub fully initialized",
 		"httpPort", cfg.ServerPort,
