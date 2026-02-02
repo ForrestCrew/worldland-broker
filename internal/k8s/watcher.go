@@ -56,6 +56,24 @@ func NewPodWatcher(clientset kubernetes.Interface, stateHandler StateChangeHandl
 	}
 }
 
+// WithResyncPeriod configures the resync period for the informer
+func (pw *PodWatcher) WithResyncPeriod(period time.Duration) *PodWatcher {
+	pw.resyncPeriod = period
+
+	// Recreate factory with new resync period
+	tweakListOptions := func(opts *metav1.ListOptions) {
+		opts.LabelSelector = fmt.Sprintf("%s=true", LabelGPURental)
+	}
+
+	pw.factory = informers.NewSharedInformerFactoryWithOptions(
+		pw.clientset,
+		period,
+		informers.WithTweakListOptions(tweakListOptions),
+	)
+
+	return pw
+}
+
 // Start starts the PodWatcher informer and blocks until context is cancelled
 func (pw *PodWatcher) Start(ctx context.Context) error {
 	informer := pw.factory.Core().V1().Pods().Informer()
@@ -260,4 +278,31 @@ func extractPodFailureReason(pod *corev1.Pod) string {
 	}
 
 	return "Unknown"
+}
+
+// IsCacheSynced returns true if the informer cache is synced
+func (pw *PodWatcher) IsCacheSynced() bool {
+	informer := pw.factory.Core().V1().Pods().Informer()
+	return informer.HasSynced()
+}
+
+// GetPodFromCache retrieves a Pod from the informer cache (no API call)
+func (pw *PodWatcher) GetPodFromCache(namespace, name string) (*corev1.Pod, bool) {
+	lister := pw.factory.Core().V1().Pods().Lister()
+	pod, err := lister.Pods(namespace).Get(name)
+	if err != nil {
+		return nil, false
+	}
+	return pod, true
+}
+
+// ListPodsFromCache lists all Pods from the informer cache
+func (pw *PodWatcher) ListPodsFromCache() []*corev1.Pod {
+	lister := pw.factory.Core().V1().Pods().Lister()
+	pods, err := lister.List(nil) // nil selector = all pods (already filtered by informer)
+	if err != nil {
+		pw.logger.Error("failed to list pods from cache", "error", err)
+		return nil
+	}
+	return pods
 }
