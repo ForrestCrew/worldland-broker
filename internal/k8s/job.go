@@ -261,3 +261,111 @@ func (m *JobManager) DeleteGPUSessionImmediate(ctx context.Context, userAddress,
 
 	return nil
 }
+
+// GetSSHConnectionInfo retrieves SSH connection details for a session
+// Returns error if Pod is not ready yet
+func (m *JobManager) GetSSHConnectionInfo(ctx context.Context, userAddress, sessionID string) (*SSHConnectionInfo, error) {
+	namespace := TenantNamespace(userAddress)
+
+	// Get Service to find NodePort
+	svc, err := m.clientset.CoreV1().Services(namespace).Get(ctx, SSHServiceName(sessionID), metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get SSH service: %w", err)
+	}
+
+	var nodePort int32
+	for _, port := range svc.Spec.Ports {
+		if port.Name == "ssh" {
+			nodePort = port.NodePort
+			break
+		}
+	}
+
+	if nodePort == 0 {
+		return nil, fmt.Errorf("SSH NodePort not found in service")
+	}
+
+	// Get Pod to find which Node it's running on
+	pod, err := m.clientset.CoreV1().Pods(namespace).Get(ctx, PodName(sessionID), metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Check Pod readiness
+	if !IsPodReady(pod) {
+		return nil, fmt.Errorf("pod not ready yet")
+	}
+
+	// Get Node to find IP address
+	node, err := m.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node: %w", err)
+	}
+
+	var nodeIP string
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeExternalIP {
+			nodeIP = addr.Address
+			break
+		}
+		if addr.Type == corev1.NodeInternalIP && nodeIP == "" {
+			nodeIP = addr.Address
+		}
+	}
+
+	if nodeIP == "" {
+		return nil, fmt.Errorf("node IP not found")
+	}
+
+	// Retrieve SSH password from K8s Secret
+	password, err := GetSSHPassword(ctx, m.clientset, namespace, sessionID)
+	if err != nil {
+		m.logger.Warn("failed to get SSH password", "sessionId", sessionID, "error", err)
+		// Return connection info without password - caller may have it stored elsewhere
+		password = ""
+	}
+
+	return &SSHConnectionInfo{
+		Host:     nodeIP,
+		Port:     nodePort,
+		Password: password,
+	}, nil
+}
+
+// GetPodStatus returns the Pod phase and readiness status
+func (m *JobManager) GetPodStatus(ctx context.Context, userAddress, sessionID string) (*corev1.PodPhase, bool, error) {
+	namespace := TenantNamespace(userAddress)
+
+	pod, err := m.clientset.CoreV1().Pods(namespace).Get(ctx, PodName(sessionID), metav1.GetOptions{})
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	phase := pod.Status.Phase
+	isReady := IsPodReady(pod)
+
+	return &phase, isReady, nil
+}
+
+// IsPodReady checks if a Pod has the Ready condition set to True
+func IsPodReady(pod *corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// ListSessionPods lists all GPU rental session Pods across all namespaces
+// For orphan cleanup and monitoring
+func (m *JobManager) ListSessionPods(ctx context.Context) ([]corev1.Pod, error) {
+	pods, err := m.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=true", LabelGPURental),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return pods.Items, nil
+}
