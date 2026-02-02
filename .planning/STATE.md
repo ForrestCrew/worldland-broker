@@ -3,9 +3,9 @@
 ## Current Position
 
 **Phase:** 22-hub-proxy-integration (Phase 22 of 19)
-**Plan:** 04 of ?? complete
+**Plan:** 05 of ?? complete
 **Status:** In progress
-**Last activity:** 2026-02-02 - Completed 22-04-PLAN.md (PodWatcher with Informer-Based State Sync)
+**Last activity:** 2026-02-02 - Completed 22-05-PLAN.md (Hub-K8s Worker Integration)
 
 **Progress:** [████████████████████] Phase 22 in progress
 
@@ -18,7 +18,8 @@ Completed plans:
 - **22-02:** K8s types and helpers (labels, pod naming)
 - **22-03:** JobManager with CreateGPUSession and SSH password injection
 - **22-03b:** JobManager delete/query operations
-- **22-04:** PodWatcher with Informer-based state synchronization (JUST COMPLETED)
+- **22-04:** PodWatcher with Informer-based state synchronization
+- **22-05:** Hub-K8s Worker Integration (JUST COMPLETED)
 
 Phase 22 delivered so far:
 - TenantOrchestrator: namespace management with resource quotas
@@ -31,6 +32,10 @@ Phase 22 delivered so far:
 - PodWatcher: Informer-based real-time Pod state monitoring
 - StateChangeHandler interface for decoupled state management
 - Cache utilities: IsCacheSynced, GetPodFromCache, ListPodsFromCache
+- K8sStateHandler: bridges PodWatcher events to SessionManager
+- ConfirmationWorker: creates K8s Pods after blockchain confirmation
+- ExpirationWorker: deletes K8s Pods on session expiration
+- Optional K8s integration via WithK8s() builder methods
 - Complete unit test coverage with fake clientset and mock handlers
 
 ### Phase 14: ADR-001 Backend Implementation (COMPLETE)
@@ -77,6 +82,9 @@ Phase 14 delivered:
 | Level-driven state handling | 22-04 | Check current Pod phase instead of tracking transitions | Resilient to missed events, correct after restarts |
 | Running+Ready requirement | 22-04 | Require Pod to be Running AND Ready before OnPodRunning | Ensures SSH service is actually available (readiness probe passed) |
 | Graceful missing label skip | 22-04 | Skip Pods without session-id label without error | Allows coexistence with other GPU workloads in cluster |
+| Blockchain confirmation precedence | 22-05 | Blockchain is source of truth for session state, K8s only handles infrastructure failures | K8sStateHandler skips state transition when Pod Running but session PENDING |
+| Optional K8s integration | 22-05 | Hub can run without K8s configured (backward compatibility) | Workers have WithK8s() builder methods and nil checks |
+| Node API remains primary | 22-05 | Existing Node API flow must continue working | K8s Pod creation is additive, failures are non-fatal |
 
 ### Technical Stack
 
@@ -90,6 +98,8 @@ Phase 14 delivered:
 - StateChangeHandler interface
 - Informer-based state synchronization pattern
 - Cache-first Pod lookups
+- K8sStateHandler for bridging K8s events to Hub state machine
+- Optional K8s integration pattern (WithK8s() builder methods)
 
 **Added in Phase 14:**
 - SoftDeleter interface for TTL cleanup
@@ -172,14 +182,14 @@ internal/k8s/watcher_test.go                # Watcher tests
 
 ## Session Continuity
 
-**Last session:** 2026-02-02T12:47:31Z
-**Stopped at:** Completed 22-04-PLAN.md (PodWatcher with Informer-Based State Sync)
+**Last session:** 2026-02-02T12:56:33Z
+**Stopped at:** Completed 22-05-PLAN.md (Hub-K8s Worker Integration)
 **Resume file:** None
 
 **Next steps:**
-1. Plan 22-05: SessionManager implements StateChangeHandler interface
-2. Plan 22-06: Wire PodWatcher to Hub lifecycle
-3. Continue Phase 22 remaining plans for full Hub-K8s integration
+1. Plan 22-06: Wire PodWatcher to Hub lifecycle (main.go integration)
+2. Continue Phase 22 remaining plans for full Hub-K8s integration
+3. Consider SSH password storage in session domain model
 
 ## Test Coverage
 
@@ -219,8 +229,11 @@ internal/k8s/watcher_test.go                # Watcher tests
 - 22-02: K8s types and naming helpers
 - 22-03: JobManager CreateGPUSession
 - 22-03b: JobManager delete/query operations
+- 22-04: PodWatcher with Informer-based state sync
+- 22-05: Hub-K8s Worker Integration
 
 **Pending:**
+- 22-06: Wire PodWatcher to Hub lifecycle (main.go)
 - Additional Phase 22 plans (if any)
 
 ## Phase 14 Completion Status
@@ -232,5 +245,5 @@ internal/k8s/watcher_test.go                # Watcher tests
 - 14-04: TTL cleanup with soft delete
 
 ---
-*Last updated: 2026-02-02T21:45:47Z*
+*Last updated: 2026-02-02T12:58:44Z*
 *Phase: 22-hub-proxy-integration (IN PROGRESS)*
