@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -299,7 +300,7 @@ func (pw *PodWatcher) GetPodFromCache(namespace, name string) (*corev1.Pod, bool
 // ListPodsFromCache lists all Pods from the informer cache
 func (pw *PodWatcher) ListPodsFromCache() []*corev1.Pod {
 	lister := pw.factory.Core().V1().Pods().Lister()
-	pods, err := lister.List(nil) // nil selector = all pods (already filtered by informer)
+	pods, err := lister.List(labels.Everything()) // All pods (already filtered by informer's label selector)
 	if err != nil {
 		pw.logger.Error("failed to list pods from cache", "error", err)
 		return nil
