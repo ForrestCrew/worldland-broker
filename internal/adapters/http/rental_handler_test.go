@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	nethttp "net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,6 +109,59 @@ func (m *rentalMockRentalSessionRepo) ListByState(ctx context.Context, state dom
 
 func (m *rentalMockRentalSessionRepo) FindStale(ctx context.Context, state domain.RentalSessionState, olderThan time.Duration) ([]*domain.RentalSession, error) {
 	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) FindByUserAndState(ctx context.Context, userAddress string, state domain.RentalSessionState) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) FindPendingSettlement(ctx context.Context, userAddress string) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) FindAllPendingSettlement(ctx context.Context) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) UpdateSettlement(ctx context.Context, sessionID, amount string, settledAt time.Time) error {
+	return nil
+}
+
+func (m *rentalMockRentalSessionRepo) GetByTxHash(ctx context.Context, txHash string) (*domain.RentalSession, error) {
+	for _, s := range m.sessions {
+		if s.TxHash != nil && *s.TxHash == txHash {
+			return s, nil
+		}
+	}
+	return nil, errors.New("session not found")
+}
+
+func (m *rentalMockRentalSessionRepo) SetTxHash(ctx context.Context, sessionID, txHash string) error {
+	if s, ok := m.sessions[sessionID]; ok {
+		s.TxHash = &txHash
+		return nil
+	}
+	return errors.New("session not found")
+}
+
+func (m *rentalMockRentalSessionRepo) SoftDeletePendingBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return 0, nil
+}
+
+func (m *rentalMockRentalSessionRepo) ListPendingWithTxHash(ctx context.Context) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *rentalMockRentalSessionRepo) UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error {
+	return nil
+}
+
+func (m *rentalMockRentalSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error) {
+	return "ext-record-id", nil
 }
 
 type rentalMockNodeRepo struct {
@@ -253,7 +308,7 @@ func TestFindProviders_ReturnsMatchingNodes(t *testing.T) {
 
 	nodeLister := &rentalMockNodeLister{nodes: nodes}
 	matcher := matching.NewProviderMatcher(nodeLister)
-	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "")
 
 	reqBody := map[string]interface{}{
@@ -280,7 +335,7 @@ func TestFindProviders_ReturnsMatchingNodes(t *testing.T) {
 func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
 	nodeLister := &rentalMockNodeLister{nodes: []*domain.Node{}}
 	matcher := matching.NewProviderMatcher(nodeLister)
-	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "")
 
 	// Missing required gpuType field
@@ -298,7 +353,7 @@ func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
 }
 
 func TestCreateSession_AuthRequired(t *testing.T) {
-	handler := httpAdapter.NewRentalHandler(nil, nil, nil, nil, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, nil, nil, nil, nil, nil, nil)
 
 	// Setup router without auth (no provider_id set)
 	gin.SetMode(gin.TestMode)
@@ -345,7 +400,7 @@ func TestCreateSession_CreatesInPendingState(t *testing.T) {
 	sessionRepo := newRentalMockRentalSessionRepo()
 	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
 
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -388,7 +443,7 @@ func TestListSessions_ReturnsUserSessions(t *testing.T) {
 		CreatedAt:       time.Now(),
 	}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("GET", "/api/v1/rentals", nil)
@@ -425,7 +480,7 @@ func TestCancelSession_CancelsPending(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -459,7 +514,7 @@ func TestCancelSession_RejectsNonPending(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -494,7 +549,7 @@ func TestCancelSession_RejectsOtherUserSession(t *testing.T) {
 	}
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/session-1", nil)
@@ -515,7 +570,7 @@ func TestCancelSession_SessionNotFound_Returns404(t *testing.T) {
 	sessionRepo := newRentalMockRentalSessionRepo() // Empty repo
 
 	sessionManager := sessions.NewSessionManager(sessionRepo, nil, nil)
-	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil)
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/rentals/nonexistent-session", nil)
@@ -563,7 +618,7 @@ func TestHandleStartRental_Success(t *testing.T) {
 		},
 	}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -600,7 +655,7 @@ func TestHandleStartRental_SessionNotFound_Returns404(t *testing.T) {
 	nodeRepo := newRentalMockNodeRepo()
 	nodeClient := &mockNodeClient{}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -636,7 +691,7 @@ func TestHandleStartRental_NotAuthorized_Returns403(t *testing.T) {
 	nodeRepo := newRentalMockNodeRepo()
 	nodeClient := &mockNodeClient{}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -679,7 +734,7 @@ func TestHandleStartRental_NodeUnreachable_Returns502(t *testing.T) {
 		startRentalErr: rental.ErrNodeUnreachable,
 	}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	reqBody := map[string]interface{}{
@@ -725,7 +780,7 @@ func TestHandleStopRental_Success(t *testing.T) {
 		},
 	}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/stop", nil)
@@ -761,7 +816,7 @@ func TestHandleStopRental_NotRunning_Returns400(t *testing.T) {
 	nodeRepo := newRentalMockNodeRepo()
 	nodeClient := &mockNodeClient{}
 
-	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient)
+	handler := httpAdapter.NewRentalHandler(nil, nil, sessionRepo, providerRepo, nodeRepo, nodeClient, nil)
 	router := setupRentalTestRouter(handler, "provider-123")
 
 	req := httptest.NewRequest("POST", "/api/v1/rentals/session-1/stop", nil)
@@ -769,4 +824,250 @@ func TestHandleStopRental_NotRunning_Returns400(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, nethttp.StatusBadRequest, w.Code)
+}
+
+// Mock BalanceValidator for testing (06-06)
+type mockBalanceValidator struct {
+	hasSufficient  bool
+	currentBalance *big.Int
+	err            error
+}
+
+func (m *mockBalanceValidator) GetDepositBalance(ctx context.Context, userAddress common.Address) (*big.Int, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.currentBalance, nil
+}
+
+func (m *mockBalanceValidator) ValidateDepositBalance(ctx context.Context, userAddress common.Address, requiredAmount *big.Int) (bool, *big.Int, error) {
+	if m.err != nil {
+		return false, nil, m.err
+	}
+	return m.hasSufficient, m.currentBalance, nil
+}
+
+// Tests for 06-06: Balance validation in CreateSession
+
+func TestCreateSession_InsufficientBalance_Returns400(t *testing.T) {
+	// Setup mocks
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:             "node-1",
+		ProviderID:     "gpu-provider-1",
+		GPUType:        "RTX 4090",
+		MemoryGB:       24,
+		PricePerSecond: "1000000000000000",
+	}
+
+	providerRepo.providers["gpu-provider-1"] = &domain.Provider{
+		ID:            "gpu-provider-1",
+		WalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
+
+	// Mock balance validator with insufficient balance
+	balanceValidator := &mockBalanceValidator{
+		hasSufficient:  false,
+		currentBalance: big.NewInt(100000000000000), // 0.0001 ETH (insufficient)
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, balanceValidator)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"nodeId":         "node-1",
+		"pricePerSecond": "1000000000000000", // 0.001 ETH/sec, needs 3.6 ETH for 1 hour
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusBadRequest, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	// Verify Korean error message and error code
+	assert.Equal(t, "예치금이 부족합니다", resp["error"])
+	assert.Equal(t, "BAL_002", resp["code"])
+
+	// Verify details contains required and current amounts
+	details, ok := resp["details"].(map[string]interface{})
+	require.True(t, ok)
+	assert.NotEmpty(t, details["required"])
+	assert.NotEmpty(t, details["current"])
+}
+
+func TestCreateSession_SufficientBalance_Succeeds(t *testing.T) {
+	// Setup mocks
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:             "node-1",
+		ProviderID:     "gpu-provider-1",
+		GPUType:        "RTX 4090",
+		MemoryGB:       24,
+		PricePerSecond: "1000000000000000",
+	}
+
+	providerRepo.providers["gpu-provider-1"] = &domain.Provider{
+		ID:            "gpu-provider-1",
+		WalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
+
+	// Mock balance validator with sufficient balance
+	// 1 hour at 0.001 ETH/sec = 3.6 ETH required
+	balanceValidator := &mockBalanceValidator{
+		hasSufficient:  true,
+		currentBalance: new(big.Int).SetUint64(10000000000000000000), // 10 ETH (sufficient)
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, balanceValidator)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"nodeId":         "node-1",
+		"pricePerSecond": "1000000000000000",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusCreated, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, resp["sessionId"])
+	assert.Equal(t, "PENDING", resp["state"])
+}
+
+func TestCreateSession_BalanceValidationError_Returns500(t *testing.T) {
+	// Setup mocks
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:             "node-1",
+		ProviderID:     "gpu-provider-1",
+		GPUType:        "RTX 4090",
+		MemoryGB:       24,
+		PricePerSecond: "1000000000000000",
+	}
+
+	providerRepo.providers["gpu-provider-1"] = &domain.Provider{
+		ID:            "gpu-provider-1",
+		WalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
+
+	// Mock balance validator with error
+	balanceValidator := &mockBalanceValidator{
+		err: errors.New("blockchain connection failed"),
+	}
+
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, balanceValidator)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"nodeId":         "node-1",
+		"pricePerSecond": "1000000000000000",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, nethttp.StatusInternalServerError, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "failed to validate balance", resp["error"])
+	assert.Equal(t, "BAL_001", resp["code"])
+}
+
+func TestCreateSession_NoBalanceValidator_SkipsCheck(t *testing.T) {
+	// Setup mocks (same as TestCreateSession_CreatesInPendingState but no balanceValidator)
+	providerRepo := newRentalMockProviderRepo()
+	providerRepo.providers["provider-123"] = &domain.Provider{
+		ID:            "provider-123",
+		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
+	}
+
+	nodeRepo := newRentalMockNodeRepo()
+	nodeRepo.nodes["node-1"] = &domain.Node{
+		ID:             "node-1",
+		ProviderID:     "gpu-provider-1",
+		GPUType:        "RTX 4090",
+		MemoryGB:       24,
+		PricePerSecond: "1000000000000000",
+	}
+
+	providerRepo.providers["gpu-provider-1"] = &domain.Provider{
+		ID:            "gpu-provider-1",
+		WalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+	}
+
+	sessionRepo := newRentalMockRentalSessionRepo()
+	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
+
+	// No balance validator - should skip balance check and create session
+	handler := httpAdapter.NewRentalHandler(nil, sessionManager, sessionRepo, providerRepo, nil, nil, nil)
+	router := setupRentalTestRouter(handler, "provider-123")
+
+	reqBody := map[string]interface{}{
+		"nodeId":         "node-1",
+		"pricePerSecond": "1000000000000000",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/v1/rentals", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Should succeed because balance check is skipped when validator is nil
+	assert.Equal(t, nethttp.StatusCreated, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, resp["sessionId"])
+	assert.Equal(t, "PENDING", resp["state"])
 }
