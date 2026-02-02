@@ -30,6 +30,7 @@ import (
 	"github.com/worldland/worldland-hub/internal/config"
 	"github.com/worldland/worldland-hub/internal/indexer"
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
@@ -52,6 +53,40 @@ func main() {
 	// Create cancellable context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Initialize K8s client (Phase 22)
+	var jobManager *k8s.JobManager
+	var tenantOrch *k8s.TenantOrchestrator
+	var podWatcher *k8s.PodWatcher
+
+	if cfg.K8s.Enabled {
+		k8sManager := k8s.GetManager()
+
+		// Initialize clientset
+		var initErr error
+		if cfg.K8s.KubeconfigPath != "" {
+			initErr = k8sManager.InitFromKubeconfig(cfg.K8s.KubeconfigPath, logger)
+		} else {
+			initErr = k8sManager.InitInCluster(logger)
+		}
+
+		if initErr != nil {
+			logger.Error("Failed to initialize K8s client", "error", initErr)
+			// Non-fatal: K8s is optional
+		} else {
+			clientset, _ := k8sManager.GetClientset()
+
+			// Create K8s components
+			jobManager = k8s.NewJobManager(clientset, logger)
+			tenantOrch = k8s.NewTenantOrchestrator(clientset, logger)
+
+			logger.Info("K8s integration initialized",
+				"kubeconfig", cfg.K8s.KubeconfigPath,
+			)
+		}
+	} else {
+		logger.Info("K8s integration disabled")
+	}
 
 	// Initialize PostgreSQL connection
 	dbPool, err := postgres.NewPool(ctx, postgres.Config{
@@ -196,6 +231,11 @@ func main() {
 	// Initialize confirmation handler (14-03 ADR-001)
 	confirmationHandler := httpAdapter.NewConfirmationHandler(rentalSessionRepo, providerRepo)
 
+	// Wire K8s integration to confirmation handler if enabled (Phase 22)
+	if jobManager != nil {
+		confirmationHandler = confirmationHandler.WithK8s(jobManager)
+	}
+
 	balanceHandler := httpAdapter.NewBalanceHandler(settlementCalculator, rentalSessionRepo, providerRepo)
 
 	// Initialize query repository and history handler (09-04)
@@ -287,6 +327,12 @@ func main() {
 			nodeRepo,
 			logger,
 		)
+
+		// Wire K8s integration if enabled (Phase 22)
+		if jobManager != nil && tenantOrch != nil {
+			confirmationWorker = confirmationWorker.WithK8s(jobManager, tenantOrch, cfg.K8s.DefaultImage)
+		}
+
 		go func() {
 			logger.Info("Starting confirmation worker")
 			if err := confirmationWorker.Start(ctx); err != nil && err != context.Canceled {
@@ -298,10 +344,49 @@ func main() {
 		logger.Warn("Confirmation worker disabled (no transaction verifier)")
 	}
 
+	// Expiration worker for auto-terminating extended sessions (16-03)
+	expirationWorker := sessions.NewExpirationWorker(
+		rentalSessionRepo,
+		rentalSessionManager,
+		nodeClient,
+		nodeRepo,
+		logger,
+	)
+	go func() {
+		logger.Info("Starting expiration worker")
+		if err := expirationWorker.Start(ctx); err != nil && err != context.Canceled {
+			logger.Error("Expiration worker error", "error", err)
+		}
+		logger.Info("Expiration worker stopped")
+	}()
+
+	// Start K8s PodWatcher if K8s enabled (Phase 22)
+	if jobManager != nil {
+		// Create K8s state handler (from sessions package)
+		k8sStateHandler := sessions.NewK8sStateHandler(
+			rentalSessionManager,
+			rentalSessionRepo,
+			logger,
+		)
+
+		// Get clientset for watcher
+		clientset, _ := k8s.GetManager().GetClientset()
+		podWatcher = k8s.NewPodWatcher(clientset, k8sStateHandler, logger)
+
+		go func() {
+			logger.Info("Starting K8s pod watcher")
+			if err := podWatcher.Start(ctx); err != nil && err != context.Canceled {
+				logger.Error("Pod watcher error", "error", err)
+			}
+			logger.Info("Pod watcher stopped")
+		}()
+	}
+
 	logger.Info("Hub fully initialized",
 		"httpPort", cfg.ServerPort,
 		"mtlsPort", cfg.MTLSPort,
 		"blockchainListener", eventListener != nil,
+		"k8sIntegration", jobManager != nil,
 	)
 
 	// Graceful shutdown

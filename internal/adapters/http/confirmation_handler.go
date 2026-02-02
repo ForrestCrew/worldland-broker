@@ -1,6 +1,8 @@
 package http
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/k8s"
 )
 
 // txHashRegex validates Ethereum transaction hash format: 0x followed by 64 hex characters
@@ -33,6 +36,8 @@ type ConfirmResponse struct {
 type ConfirmationHandler struct {
 	sessionRepo  domain.RentalSessionRepository
 	providerRepo domain.ProviderRepository
+	jobManager   *k8s.JobManager // Can be nil if K8s disabled
+	logger       *slog.Logger
 }
 
 // NewConfirmationHandler creates a new confirmation handler
@@ -43,7 +48,15 @@ func NewConfirmationHandler(
 	return &ConfirmationHandler{
 		sessionRepo:  sessionRepo,
 		providerRepo: providerRepo,
+		jobManager:   nil,           // Set via WithK8s for backward compatibility
+		logger:       slog.Default(), // Use default logger
 	}
+}
+
+// WithK8s sets the K8s JobManager for SSH connection info retrieval
+func (h *ConfirmationHandler) WithK8s(jobManager *k8s.JobManager) *ConfirmationHandler {
+	h.jobManager = jobManager
+	return h
 }
 
 // ConfirmRental handles POST /api/v1/rentals/:id/confirm
@@ -171,10 +184,11 @@ type GetSessionResponse struct {
 	CreatedAt       string  `json:"createdAt"`
 	UpdatedAt       string  `json:"updatedAt"`
 	// SSH credentials only if state is RUNNING
-	SSHHost    string `json:"sshHost,omitempty"`
-	SSHPort    int    `json:"sshPort,omitempty"`
-	SSHUser    string `json:"sshUser,omitempty"`
-	SSHCommand string `json:"sshCommand,omitempty"`
+	SSHHost     string `json:"sshHost,omitempty"`
+	SSHPort     int    `json:"sshPort,omitempty"`
+	SSHUser     string `json:"sshUser,omitempty"`
+	SSHPassword string `json:"sshPassword,omitempty"`
+	SSHCommand  string `json:"sshCommand,omitempty"`
 }
 
 // GetSession handles GET /api/v1/rentals/:id
@@ -232,12 +246,23 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 		resp.EndTime = &t
 	}
 
-	// If RUNNING, include SSH credentials
-	// Note: SSH credentials would come from session data or a separate store
-	// after the ConfirmationWorker provisions the container
-	if session.State == domain.RentalStateRunning {
-		// SSH credentials would be populated here from session.SSHCredentials or cache
-		// For now, they'll be returned empty until SSH credential storage is added
+	// If RUNNING, include SSH credentials from K8s (Phase 22)
+	if session.State == domain.RentalStateRunning && h.jobManager != nil {
+		sshInfo, err := h.jobManager.GetSSHConnectionInfo(
+			c.Request.Context(),
+			session.UserAddress,
+			session.ID,
+		)
+		if err != nil {
+			// Log but don't fail - SSH info might not be ready yet
+			h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
+		} else {
+			resp.SSHHost = sshInfo.Host
+			resp.SSHPort = int(sshInfo.Port)
+			resp.SSHUser = "root"
+			resp.SSHPassword = sshInfo.Password
+			resp.SSHCommand = fmt.Sprintf("ssh root@%s -p %d", sshInfo.Host, sshInfo.Port)
+		}
 	}
 
 	c.JSON(http.StatusOK, resp)

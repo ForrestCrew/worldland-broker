@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -11,12 +12,21 @@ import (
 type BlockchainConfig struct {
 	// RPCEndpoints contains WebSocket RPC endpoints for BNB Chain (comma-separated in env)
 	RPCEndpoints []string
+	// HTTPRPCEndpoint is the HTTP RPC endpoint for contract calls (balance queries)
+	HTTPRPCEndpoint string
 	// ContractAddress is the deployed WorldlandRental contract address
 	ContractAddress string
 	// DeploymentBlock is the block number when the contract was deployed (for initial backfill)
 	DeploymentBlock uint64
 	// ListenerEnabled toggles the event listener (useful for local development/testing)
 	ListenerEnabled bool
+}
+
+// K8sConfig holds Kubernetes integration settings (Phase 22)
+type K8sConfig struct {
+	Enabled        bool   // Enable K8s integration
+	KubeconfigPath string // Path to kubeconfig (empty for in-cluster)
+	DefaultImage   string // Default GPU container image
 }
 
 // Config holds application configuration
@@ -40,17 +50,58 @@ type Config struct {
 	MTLSKeyPath      string
 	CertTTL          time.Duration
 
+	// Hub-to-Node mTLS Client Certificates (DEBT-01)
+	NodeClientCertPath string
+	NodeClientKeyPath  string
+
 	// Auth
 	SIWEDomain string
 	SessionTTL time.Duration
 
 	// Blockchain
 	Blockchain BlockchainConfig
+
+	// K8s integration (Phase 22)
+	K8s K8sConfig
 }
 
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() *Config {
-	dbPort, _ := strconv.Atoi(getEnv("DB_PORT", "5432"))
+	// Parse DATABASE_URL if present (takes precedence for Docker/12-factor compatibility)
+	var dbHost, dbUser, dbPassword, dbName string
+	var dbPort int
+
+	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+		if u, err := url.Parse(databaseURL); err == nil {
+			dbHost = u.Hostname()
+			if portStr := u.Port(); portStr != "" {
+				dbPort, _ = strconv.Atoi(portStr)
+			}
+			if u.User != nil {
+				dbUser = u.User.Username()
+				dbPassword, _ = u.User.Password()
+			}
+			dbName = strings.TrimPrefix(u.Path, "/")
+		}
+	}
+
+	// Fall back to individual env vars if DATABASE_URL not set or parsing failed
+	if dbHost == "" {
+		dbHost = getEnv("DB_HOST", "localhost")
+	}
+	if dbPort == 0 {
+		dbPort, _ = strconv.Atoi(getEnv("DB_PORT", "5432"))
+	}
+	if dbUser == "" {
+		dbUser = getEnv("DB_USER", "worldland")
+	}
+	if dbPassword == "" {
+		dbPassword = getEnv("DB_PASSWORD", "devpassword")
+	}
+	if dbName == "" {
+		dbName = getEnv("DB_NAME", "worldland_hub")
+	}
+
 	deploymentBlock, _ := strconv.ParseUint(getEnv("CONTRACT_DEPLOYMENT_BLOCK", "0"), 10, 64)
 	listenerEnabled := getEnv("BLOCKCHAIN_LISTENER_ENABLED", "true") == "true"
 
@@ -61,12 +112,16 @@ func LoadConfig() *Config {
 		rpcEndpoints[i] = strings.TrimSpace(rpcEndpoints[i])
 	}
 
+	// K8s configuration (Phase 22)
+	k8sEnabled := os.Getenv("K8S_ENABLED")
+	k8sEnabledBool := k8sEnabled == "true" || k8sEnabled == "1"
+
 	return &Config{
-		DBHost:     getEnv("DB_HOST", "localhost"),
+		DBHost:     dbHost,
 		DBPort:     dbPort,
-		DBUser:     getEnv("DB_USER", "worldland"),
-		DBPassword: getEnv("DB_PASSWORD", "devpassword"),
-		DBName:     getEnv("DB_NAME", "worldland_hub"),
+		DBUser:     dbUser,
+		DBPassword: dbPassword,
+		DBName:     dbName,
 
 		ServerPort: getEnv("SERVER_PORT", "8080"),
 		MTLSPort:   getEnv("MTLS_PORT", "8443"),
@@ -78,14 +133,25 @@ func LoadConfig() *Config {
 		MTLSKeyPath:      getEnv("MTLS_KEY_PATH", "./dev/certs/hub.key"),
 		CertTTL:          24 * time.Hour,
 
+		// Hub-to-Node mTLS Client Certificates (DEBT-01)
+		NodeClientCertPath: getEnv("NODE_CLIENT_CERT_PATH", "certs/hub-client.crt"),
+		NodeClientKeyPath:  getEnv("NODE_CLIENT_KEY_PATH", "certs/hub-client.key"),
+
 		SIWEDomain: getEnv("SIWE_DOMAIN", "hub.worldland.io"),
 		SessionTTL: 24 * time.Hour,
 
 		Blockchain: BlockchainConfig{
 			RPCEndpoints:    rpcEndpoints,
+			HTTPRPCEndpoint: getEnv("BLOCKCHAIN_HTTP_RPC", "https://bsc-dataseed1.binance.org"),
 			ContractAddress: getEnv("CONTRACT_ADDRESS", ""),
 			DeploymentBlock: deploymentBlock,
 			ListenerEnabled: listenerEnabled,
+		},
+
+		K8s: K8sConfig{
+			Enabled:        k8sEnabledBool,
+			KubeconfigPath: os.Getenv("KUBECONFIG"),
+			DefaultImage:   getEnv("K8S_DEFAULT_IMAGE", "ubuntu:22.04"),
 		},
 	}
 }
