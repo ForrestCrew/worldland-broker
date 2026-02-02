@@ -16,6 +16,7 @@ func NewRouter(
 	confirmationHandler *ConfirmationHandler,
 	balanceHandler *BalanceHandler,
 	historyHandler *HistoryHandler,
+	monitoringHandler *MonitoringHandler,
 	sessionManager *auth.SessionManager,
 ) *gin.Engine {
 	router := gin.Default()
@@ -42,6 +43,11 @@ func NewRouter(
 		// Public CA endpoint (nodes need CA cert to verify Hub)
 		v1.GET("/ca/root", certHandler.GetRootCA)
 
+		// Public images endpoint (24-03 - no auth required for preset list)
+		if rentalHandler != nil {
+			v1.GET("/images", rentalHandler.ListImages)
+		}
+
 		// Protected endpoints (require valid session)
 		protected := v1.Group("")
 		protected.Use(intMiddleware.AuthMiddleware(sessionManager))
@@ -67,6 +73,7 @@ func NewRouter(
 					rentals.DELETE("/:id", rentalHandler.CancelSession)     // Cancel session
 					rentals.POST("/:id/start", rentalHandler.HandleStartRental) // Start rental (04-05)
 					rentals.POST("/:id/stop", rentalHandler.HandleStopRental)   // Stop rental (04-05)
+					rentals.POST("/:id/extend", rentalHandler.HandleExtendSession) // Extend session (16-03)
 
 					// Confirmation endpoints (14-03 ADR-001)
 					if confirmationHandler != nil {
@@ -79,6 +86,17 @@ func NewRouter(
 			// Balance endpoint (04-06)
 			if balanceHandler != nil {
 				protected.GET("/balance", balanceHandler.GetBalance)
+			}
+
+			// Monitoring endpoints (Phase 23)
+			if monitoringHandler != nil {
+				monitoring := protected.Group("/monitoring")
+				{
+					monitoring.GET("/provider/stats", monitoringHandler.GetProviderStats)
+					monitoring.GET("/tenant/:address", monitoringHandler.GetTenantUsage)
+					monitoring.GET("/sessions", monitoringHandler.GetAllSessions)
+					monitoring.GET("/sessions/:id", monitoringHandler.GetSessionMetrics)
+				}
 			}
 		}
 	}
