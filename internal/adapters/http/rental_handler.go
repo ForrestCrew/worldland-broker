@@ -26,6 +26,7 @@ type RentalHandler struct {
 	nodeRepo         domain.NodeRepository
 	nodeClient       rental.NodeClientInterface
 	balanceValidator blockchain.BalanceValidatorInterface
+	imageRepo        domain.ImageRepository // Optional, for preset image listing (24-03)
 }
 
 // NewRentalHandler creates a new rental handler
@@ -47,6 +48,12 @@ func NewRentalHandler(
 		nodeClient:       nodeClient,
 		balanceValidator: balanceValidator,
 	}
+}
+
+// WithImageRepository sets the ImageRepository for preset image listing (24-03)
+func (h *RentalHandler) WithImageRepository(repo domain.ImageRepository) *RentalHandler {
+	h.imageRepo = repo
+	return h
 }
 
 // FindProvidersRequest represents a provider search request
@@ -122,6 +129,7 @@ func (h *RentalHandler) FindProviders(c *gin.Context) {
 type CreateSessionRequest struct {
 	NodeID         string `json:"nodeId" binding:"required"`
 	PricePerSecond string `json:"pricePerSecond" binding:"required"`
+	Image          string `json:"image,omitempty"` // Optional: preset UUID or custom docker image URL (24-03)
 }
 
 // CreateSessionResponse represents the created session
@@ -207,9 +215,24 @@ func (h *RentalHandler) CreateSession(c *gin.Context) {
 		userAddress,
 		req.NodeID,
 		req.PricePerSecond,
-		"", // Use default image for now (will be extended in Task 3)
+		req.Image, // Pass image parameter: empty string uses default, UUID resolves preset, custom URL validated
 	)
 	if err != nil {
+		// Handle image-related errors (24-03)
+		if errors.Is(err, sessions.ErrInvalidImage) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "유효하지 않은 이미지 형식입니다", // Korean: Invalid image format
+				"code":  "IMG_001",
+			})
+			return
+		}
+		if errors.Is(err, sessions.ErrImageNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "이미지를 찾을 수 없습니다", // Korean: Image not found
+				"code":  "IMG_002",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
 		return
 	}
@@ -513,6 +536,75 @@ func convertNodes(nodes []*domain.Node) []*ProviderInfo {
 			GPUType:        n.GPUType,
 			MemoryGB:       n.MemoryGB,
 			PricePerSecond: n.PricePerSecond,
+		}
+	}
+	return result
+}
+
+// ImageInfo represents a base image in API response (24-03)
+type ImageInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DockerImage string `json:"dockerImage"`
+	Category    string `json:"category"`
+	GPURequired bool   `json:"gpuRequired"`
+	Description string `json:"description,omitempty"`
+}
+
+// ListImagesResponse represents the list of available preset images (24-03)
+type ListImagesResponse struct {
+	Images       []*ImageInfo `json:"images"`
+	DefaultImage string       `json:"defaultImage"` // Used when no image specified
+}
+
+// ListImages handles GET /api/v1/images
+// Returns available preset GPU container images
+func (h *RentalHandler) ListImages(c *gin.Context) {
+	// Check if image repository is configured
+	if h.imageRepo == nil {
+		c.JSON(http.StatusOK, ListImagesResponse{
+			Images:       []*ImageInfo{},
+			DefaultImage: domain.DefaultImage,
+		})
+		return
+	}
+
+	// Optional category filter
+	category := c.Query("category")
+
+	var images []*domain.BaseImage
+	var err error
+
+	if category != "" && domain.IsValidCategory(category) {
+		images, err = h.imageRepo.ListByCategory(c.Request.Context(), domain.ImageCategory(category))
+	} else {
+		images, err = h.imageRepo.List(c.Request.Context())
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list images"})
+		return
+	}
+
+	c.JSON(http.StatusOK, ListImagesResponse{
+		Images:       convertImages(images),
+		DefaultImage: domain.DefaultImage,
+	})
+}
+
+func convertImages(images []*domain.BaseImage) []*ImageInfo {
+	if images == nil {
+		return []*ImageInfo{}
+	}
+	result := make([]*ImageInfo, len(images))
+	for i, img := range images {
+		result[i] = &ImageInfo{
+			ID:          img.ID,
+			Name:        img.Name,
+			DockerImage: img.DockerImage,
+			Category:    string(img.Category),
+			GPURequired: img.GPURequired,
+			Description: img.Description,
 		}
 	}
 	return result
