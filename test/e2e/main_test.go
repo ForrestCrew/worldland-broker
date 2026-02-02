@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
+	"sigs.k8s.io/e2e-framework/support"
+	"sigs.k8s.io/e2e-framework/support/kind"
 )
 
 var (
@@ -64,8 +66,8 @@ func TestMain(m *testing.M) {
 }
 
 // kindProvider returns the Kind cluster provider for e2e-framework
-func kindProvider() envfuncs.ClusterProvider {
-	return envfuncs.GetClusterProvider()
+func kindProvider() support.E2EClusterProvider {
+	return kind.NewProvider()
 }
 
 // useExistingKindCluster returns a setup function that connects to an existing Kind cluster
