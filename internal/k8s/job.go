@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -174,6 +175,88 @@ func (m *JobManager) createSSHService(ctx context.Context, namespace, sessionID 
 		"sessionId", sessionID,
 		"namespace", namespace,
 		"serviceName", SSHServiceName(sessionID),
+	)
+
+	return nil
+}
+
+// DeleteGPUSession deletes a GPU session (Pod, Service, and Secret) with graceful termination
+// Idempotent - returns nil if resources don't exist
+func (m *JobManager) DeleteGPUSession(ctx context.Context, userAddress, sessionID string) error {
+	namespace := TenantNamespace(userAddress)
+	podName := PodName(sessionID)
+
+	// Delete Pod with grace period
+	gracePeriod := int64(30)
+	propagationPolicy := metav1.DeletePropagationForeground
+	deleteOpts := metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+		PropagationPolicy:  &propagationPolicy,
+	}
+
+	err := m.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, deleteOpts)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete pod: %w", err)
+	}
+
+	// Delete SSH Service (ignore NotFound)
+	err = m.clientset.CoreV1().Services(namespace).Delete(ctx, SSHServiceName(sessionID), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		m.logger.Warn("failed to delete SSH service", "sessionId", sessionID, "error", err)
+		// Continue - not fatal
+	}
+
+	// Delete SSH Secret (ignore NotFound)
+	if err := deleteSSHSecret(ctx, m.clientset, namespace, sessionID); err != nil {
+		m.logger.Warn("failed to delete SSH secret", "sessionId", sessionID, "error", err)
+		// Continue - not fatal
+	}
+
+	m.logger.Info("deleted GPU session",
+		"sessionId", sessionID,
+		"namespace", namespace,
+		"podName", podName,
+	)
+
+	return nil
+}
+
+// DeleteGPUSessionImmediate deletes a GPU session immediately (grace period = 0)
+// For force termination scenarios
+func (m *JobManager) DeleteGPUSessionImmediate(ctx context.Context, userAddress, sessionID string) error {
+	namespace := TenantNamespace(userAddress)
+	podName := PodName(sessionID)
+
+	// Delete Pod with zero grace period
+	gracePeriod := int64(0)
+	propagationPolicy := metav1.DeletePropagationForeground
+	deleteOpts := metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+		PropagationPolicy:  &propagationPolicy,
+	}
+
+	err := m.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, deleteOpts)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete pod: %w", err)
+	}
+
+	// Delete SSH Service (ignore NotFound)
+	err = m.clientset.CoreV1().Services(namespace).Delete(ctx, SSHServiceName(sessionID), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		m.logger.Warn("failed to delete SSH service", "sessionId", sessionID, "error", err)
+		// Continue - not fatal
+	}
+
+	// Delete SSH Secret (ignore NotFound)
+	if err := deleteSSHSecret(ctx, m.clientset, namespace, sessionID); err != nil {
+		m.logger.Warn("failed to delete SSH secret", "sessionId", sessionID, "error", err)
+		// Continue - not fatal
+	}
+
+	m.logger.Info("deleted GPU session immediately",
+		"sessionId", sessionID,
+		"namespace", namespace,
+		"podName", podName,
 	)
 
 	return nil
