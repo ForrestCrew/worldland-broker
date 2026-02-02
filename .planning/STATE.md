@@ -3,9 +3,9 @@
 ## Current Position
 
 **Phase:** 22-hub-proxy-integration (Phase 22 of 19)
-**Plan:** 03b of ?? in progress
+**Plan:** 04 of ?? complete
 **Status:** In progress
-**Last activity:** 2026-02-02 - Completed 22-03b-PLAN.md (JobManager Delete/Query Operations)
+**Last activity:** 2026-02-02 - Completed 22-04-PLAN.md (PodWatcher with Informer-Based State Sync)
 
 **Progress:** [████████████████████] Phase 22 in progress
 
@@ -17,7 +17,8 @@ Completed plans:
 - **22-01:** Tenant isolation (namespaces, quotas, network policies)
 - **22-02:** K8s types and helpers (labels, pod naming)
 - **22-03:** JobManager with CreateGPUSession and SSH password injection
-- **22-03b:** JobManager delete/query operations (JUST COMPLETED)
+- **22-03b:** JobManager delete/query operations
+- **22-04:** PodWatcher with Informer-based state synchronization (JUST COMPLETED)
 
 Phase 22 delivered so far:
 - TenantOrchestrator: namespace management with resource quotas
@@ -27,7 +28,10 @@ Phase 22 delivered so far:
 - Pod deletion (graceful 30s and immediate 0s)
 - SSH connection info retrieval (host, port, password)
 - Pod listing for orphan cleanup
-- Complete unit test coverage with fake clientset
+- PodWatcher: Informer-based real-time Pod state monitoring
+- StateChangeHandler interface for decoupled state management
+- Cache utilities: IsCacheSynced, GetPodFromCache, ListPodsFromCache
+- Complete unit test coverage with fake clientset and mock handlers
 
 ### Phase 14: ADR-001 Backend Implementation (COMPLETE)
 
@@ -69,6 +73,10 @@ Phase 14 delivered:
 | Graceful vs immediate deletion | 22-03b | Provide both 30s and 0s grace period methods | Hub can choose based on scenario (normal vs force) |
 | SSH password fallback | 22-03b | Return empty password on Secret retrieval failure | Caller may have password stored elsewhere |
 | Multi-resource cleanup | 22-03b | Delete Pod, Service, AND Secret together | Prevents Secret leakage after session ends |
+| Informer with label selector | 22-04 | SharedInformerFactory filters to worldland.io/gpu-rental=true at creation | Reduces memory/network overhead by only watching GPU rental Pods |
+| Level-driven state handling | 22-04 | Check current Pod phase instead of tracking transitions | Resilient to missed events, correct after restarts |
+| Running+Ready requirement | 22-04 | Require Pod to be Running AND Ready before OnPodRunning | Ensures SSH service is actually available (readiness probe passed) |
+| Graceful missing label skip | 22-04 | Skip Pods without session-id label without error | Allows coexistence with other GPU workloads in cluster |
 
 ### Technical Stack
 
@@ -78,6 +86,10 @@ Phase 14 delivered:
 - SSH password generation and Secret injection
 - Graceful and immediate Pod termination
 - Multi-resource cleanup (Pod + Service + Secret)
+- PodWatcher with SharedInformerFactory
+- StateChangeHandler interface
+- Informer-based state synchronization pattern
+- Cache-first Pod lookups
 
 **Added in Phase 14:**
 - SoftDeleter interface for TTL cleanup
@@ -144,16 +156,30 @@ internal/sessions/timeouts_test.go          # Updated tests
 cmd/hub/main.go                             # Wire SoftDeleter
 ```
 
+### Key Files Created (Phase 22)
+```
+internal/k8s/types.go                       # K8s labels, types, naming helpers
+internal/k8s/tenant.go                      # TenantOrchestrator for namespace management
+internal/k8s/tenant_test.go                 # Tenant tests
+internal/k8s/client.go                      # ClientsetManager singleton
+internal/k8s/client_test.go                 # Client tests
+internal/k8s/password.go                    # SSH password generation
+internal/k8s/job.go                         # JobManager for Pod lifecycle
+internal/k8s/job_test.go                    # Job tests
+internal/k8s/watcher.go                     # PodWatcher with Informer-based state sync
+internal/k8s/watcher_test.go                # Watcher tests
+```
+
 ## Session Continuity
 
-**Last session:** 2026-02-02T21:45:47Z
-**Stopped at:** Completed 22-03b-PLAN.md (JobManager Delete/Query Operations)
+**Last session:** 2026-02-02T12:47:31Z
+**Stopped at:** Completed 22-04-PLAN.md (PodWatcher with Informer-Based State Sync)
 **Resume file:** None
 
 **Next steps:**
-1. Continue Phase 22 remaining plans (if any)
-2. Phase 22 delivers K8s orchestration for GPU Pod lifecycle
-3. Ready for Hub integration (Phase 23)
+1. Plan 22-05: SessionManager implements StateChangeHandler interface
+2. Plan 22-06: Wire PodWatcher to Hub lifecycle
+3. Continue Phase 22 remaining plans for full Hub-K8s integration
 
 ## Test Coverage
 
