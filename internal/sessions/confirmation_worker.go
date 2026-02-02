@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/rental"
 )
 
@@ -29,6 +30,10 @@ type ConfirmationWorker struct {
 	nodeRepo    domain.NodeRepository
 	interval    time.Duration
 	logger      *slog.Logger
+	// NEW: K8s integration
+	jobManager   *k8s.JobManager
+	tenantOrch   *k8s.TenantOrchestrator
+	defaultImage string // Default container image for GPU sessions
 }
 
 // NewConfirmationWorker creates a new background worker for processing pending confirmations.
@@ -49,14 +54,25 @@ func NewConfirmationWorker(
 	logger *slog.Logger,
 ) *ConfirmationWorker {
 	return &ConfirmationWorker{
-		sessionRepo: sessionRepo,
-		verifier:    verifier,
-		manager:     manager,
-		nodeClient:  nodeClient,
-		nodeRepo:    nodeRepo,
-		interval:    DefaultConfirmationInterval,
-		logger:      logger,
+		sessionRepo:  sessionRepo,
+		verifier:     verifier,
+		manager:      manager,
+		nodeClient:   nodeClient,
+		nodeRepo:     nodeRepo,
+		interval:     DefaultConfirmationInterval,
+		logger:       logger,
+		defaultImage: "ubuntu:22.04", // Default image if K8s is not configured
 	}
+}
+
+// WithK8s configures K8s integration for Pod creation on confirmation
+func (w *ConfirmationWorker) WithK8s(jobManager *k8s.JobManager, tenantOrch *k8s.TenantOrchestrator, defaultImage string) *ConfirmationWorker {
+	w.jobManager = jobManager
+	w.tenantOrch = tenantOrch
+	if defaultImage != "" {
+		w.defaultImage = defaultImage
+	}
+	return w
 }
 
 // WithInterval sets a custom check interval (useful for testing)
@@ -221,6 +237,50 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 			w.logger.Error("failed to transition to FAILED", "error", err)
 		}
 		return
+	}
+
+	// NEW: Create K8s Pod (in addition to existing Node API call)
+	if w.jobManager != nil {
+		// Ensure tenant namespace exists
+		if w.tenantOrch != nil {
+			_, err := w.tenantOrch.EnsureTenant(ctx, session.UserAddress, 1)
+			if err != nil {
+				w.logger.Error("failed to ensure tenant namespace", "error", err)
+				// Continue - Pod creation might still work if namespace exists
+			}
+		}
+
+		// Determine GPU count (default to 1)
+		gpuCount := 1
+
+		spec := k8s.GPUJobSpec{
+			SessionID:     session.ID,
+			UserAddress:   session.UserAddress,
+			ProviderID:    node.ProviderID,
+			GPUCount:      gpuCount,
+			GPUModel:      node.GPUType,
+			Image:         w.defaultImage,
+			CPURequest:    "4",
+			MemoryRequest: "16Gi",
+			CPULimit:      "8",
+			MemoryLimit:   "32Gi",
+			ExpiresAt:     time.Now().Add(24 * time.Hour),
+		}
+
+		password, err := w.jobManager.CreateGPUSession(ctx, spec)
+		if err != nil {
+			w.logger.Error("failed to create K8s pod", "sessionId", session.ID, "error", err)
+			// Non-fatal: Node API is primary for now
+		} else {
+			w.logger.Info("created K8s pod for session",
+				"sessionId", session.ID,
+				"password", "[REDACTED]",
+			)
+
+			// TODO: Store SSH password in session for later API retrieval
+			// Note: Check if session repo has UpdateSSHPassword method, if not, skip
+			_ = password // password available for future use
+		}
 	}
 
 	// Call node to start the rental container
