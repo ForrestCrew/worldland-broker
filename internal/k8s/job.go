@@ -1,0 +1,180 @@
+package k8s
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
+)
+
+// JobManager manages GPU session Pod lifecycle
+type JobManager struct {
+	clientset kubernetes.Interface
+	logger    *slog.Logger
+}
+
+// NewJobManager creates a new JobManager
+func NewJobManager(clientset kubernetes.Interface, logger *slog.Logger) *JobManager {
+	return &JobManager{
+		clientset: clientset,
+		logger:    logger,
+	}
+}
+
+// CreateGPUSession creates a GPU Pod with SSH password injection
+// Returns the generated SSH password for the caller to store
+func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (password string, err error) {
+	namespace := TenantNamespace(spec.UserAddress)
+	podName := PodName(spec.SessionID)
+
+	// Generate SSH password
+	password = GenerateSSHPassword()
+
+	// Create SSH Secret first
+	if err := createSSHSecret(ctx, m.clientset, namespace, spec.SessionID, password); err != nil {
+		return "", fmt.Errorf("failed to create SSH secret: %w", err)
+	}
+
+	// Create Pod with SSH password injected from Secret
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelSessionID:  spec.SessionID,
+				LabelProviderID: spec.ProviderID,
+				LabelGPURental:  "true",
+			},
+			Annotations: map[string]string{
+				AnnotationExpiresAt:   spec.ExpiresAt.Format(time.RFC3339),
+				AnnotationUserAddress: spec.UserAddress,
+				AnnotationGPUModel:    spec.GPUModel,
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			NodeSelector: map[string]string{
+				LabelProviderID: spec.ProviderID,
+			},
+			Tolerations: []corev1.Toleration{{
+				Key:      "worldland.io/dedicated-rental",
+				Operator: corev1.TolerationOpExists,
+				Effect:   corev1.TaintEffectNoSchedule,
+			}},
+			Containers: []corev1.Container{{
+				Name:  "gpu-workload",
+				Image: spec.Image,
+				Env: []corev1.EnvVar{{
+					Name: "SSH_PASSWORD",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: SSHSecretName(spec.SessionID),
+							},
+							Key: "password",
+						},
+					},
+				}},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse(spec.CPURequest),
+						corev1.ResourceMemory: resource.MustParse(spec.MemoryRequest),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse(spec.CPULimit),
+						corev1.ResourceMemory: resource.MustParse(spec.MemoryLimit),
+					},
+				},
+				Ports: []corev1.ContainerPort{{
+					Name:          "ssh",
+					ContainerPort: 22,
+					Protocol:      corev1.ProtocolTCP,
+				}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						TCPSocket: &corev1.TCPSocketAction{
+							Port: intstr.FromInt(22),
+						},
+					},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       10,
+					TimeoutSeconds:      1,
+					FailureThreshold:    3,
+				},
+			}},
+		},
+	}
+
+	// Add GPU resource request if spec.GPUCount > 0
+	if spec.GPUCount > 0 {
+		pod.Spec.Containers[0].Resources.Requests["nvidia.com/gpu"] = resource.MustParse(strconv.Itoa(spec.GPUCount))
+		pod.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"] = resource.MustParse(strconv.Itoa(spec.GPUCount))
+	}
+
+	// Create Pod
+	_, err = m.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to create pod: %w", err)
+	}
+
+	m.logger.Info("created GPU session pod",
+		"sessionId", spec.SessionID,
+		"namespace", namespace,
+		"podName", podName,
+		"providerId", spec.ProviderID,
+		"gpuCount", spec.GPUCount,
+	)
+
+	// Create SSH NodePort Service
+	if err := m.createSSHService(ctx, namespace, spec.SessionID); err != nil {
+		return "", fmt.Errorf("failed to create SSH service: %w", err)
+	}
+
+	return password, nil
+}
+
+// createSSHService creates a NodePort Service for SSH access
+func (m *JobManager) createSSHService(ctx context.Context, namespace, sessionID string) error {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      SSHServiceName(sessionID),
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelSessionID: sessionID,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeNodePort,
+			Selector: map[string]string{
+				LabelSessionID: sessionID,
+			},
+			Ports: []corev1.ServicePort{{
+				Name:       "ssh",
+				Protocol:   corev1.ProtocolTCP,
+				Port:       22,
+				TargetPort: intstr.FromInt(22),
+			}},
+			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyTypeLocal,
+		},
+	}
+
+	_, err := m.clientset.CoreV1().Services(namespace).Create(ctx, svc, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	m.logger.Info("created SSH service",
+		"sessionId", sessionID,
+		"namespace", namespace,
+		"serviceName", SSHServiceName(sessionID),
+	)
+
+	return nil
+}
