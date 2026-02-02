@@ -239,6 +239,12 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 		return
 	}
 
+	// Determine container image (24-03: use session.DockerImage with fallback to default)
+	containerImage := session.DockerImage
+	if containerImage == "" {
+		containerImage = w.defaultImage
+	}
+
 	// NEW: Create K8s Pod (in addition to existing Node API call)
 	if w.jobManager != nil {
 		// Ensure tenant namespace exists
@@ -259,7 +265,7 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 			ProviderID:    node.ProviderID,
 			GPUCount:      gpuCount,
 			GPUModel:      node.GPUType,
-			Image:         w.defaultImage,
+			Image:         containerImage, // 24-03: Use session.DockerImage
 			CPURequest:    "4",
 			MemoryRequest: "16Gi",
 			CPULimit:      "8",
@@ -269,11 +275,12 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 
 		password, err := w.jobManager.CreateGPUSession(ctx, spec)
 		if err != nil {
-			w.logger.Error("failed to create K8s pod", "sessionId", session.ID, "error", err)
+			w.logger.Error("failed to create K8s pod", "sessionId", session.ID, "image", containerImage, "error", err)
 			// Non-fatal: Node API is primary for now
 		} else {
 			w.logger.Info("created K8s pod for session",
 				"sessionId", session.ID,
+				"image", containerImage,
 				"password", "[REDACTED]",
 			)
 
@@ -289,9 +296,9 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 	nodeReq := rental.StartRentalRequest{
 		SessionID:   session.ID,
 		GPUDeviceID: node.GPUUUID,
-		Image:       "nvidia/cuda:12.1-runtime-ubuntu22.04", // Default image
-		MemoryBytes: 8 * 1024 * 1024 * 1024,                 // 8GB default
-		CPUCount:    4,                                      // 4 CPUs default
+		Image:       containerImage,         // 24-03: Use session.DockerImage
+		MemoryBytes: 8 * 1024 * 1024 * 1024, // 8GB default
+		CPUCount:    4,                      // 4 CPUs default
 		// Note: SSHPublicKey would come from session data or a separate user profile
 		// For now, the node can generate a key pair if needed
 	}
