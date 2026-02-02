@@ -93,7 +93,7 @@ func TestRentalFlow_StartToStop(t *testing.T) {
 	batchProcessor := settlement.NewBatchProcessor(calculator, rentalSessionRepo, logger)
 
 	// === STEP 1: Create rental session ===
-	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond)
+	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
 	require.NoError(t, err)
 	assert.Equal(t, domain.RentalStatePending, session.State)
 

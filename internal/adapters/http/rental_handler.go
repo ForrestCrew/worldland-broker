@@ -2,12 +2,15 @@ package http
 
 import (
 	"errors"
+	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 
+	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/rental"
@@ -16,12 +19,13 @@ import (
 
 // RentalHandler handles rental-related HTTP requests
 type RentalHandler struct {
-	matcher        *matching.ProviderMatcher
-	sessionManager *sessions.SessionManager
-	sessionRepo    domain.RentalSessionRepository
-	providerRepo   domain.ProviderRepository
-	nodeRepo       domain.NodeRepository
-	nodeClient     rental.NodeClientInterface
+	matcher          *matching.ProviderMatcher
+	sessionManager   *sessions.SessionManager
+	sessionRepo      domain.RentalSessionRepository
+	providerRepo     domain.ProviderRepository
+	nodeRepo         domain.NodeRepository
+	nodeClient       rental.NodeClientInterface
+	balanceValidator blockchain.BalanceValidatorInterface
 }
 
 // NewRentalHandler creates a new rental handler
@@ -32,20 +36,22 @@ func NewRentalHandler(
 	providerRepo domain.ProviderRepository,
 	nodeRepo domain.NodeRepository,
 	nodeClient rental.NodeClientInterface,
+	balanceValidator blockchain.BalanceValidatorInterface,
 ) *RentalHandler {
 	return &RentalHandler{
-		matcher:        matcher,
-		sessionManager: sessionManager,
-		sessionRepo:    sessionRepo,
-		providerRepo:   providerRepo,
-		nodeRepo:       nodeRepo,
-		nodeClient:     nodeClient,
+		matcher:          matcher,
+		sessionManager:   sessionManager,
+		sessionRepo:      sessionRepo,
+		providerRepo:     providerRepo,
+		nodeRepo:         nodeRepo,
+		nodeClient:       nodeClient,
+		balanceValidator: balanceValidator,
 	}
 }
 
 // FindProvidersRequest represents a provider search request
 type FindProvidersRequest struct {
-	GPUType           string `json:"gpuType" binding:"required"`
+	GPUType           string `json:"gpuType"`
 	MinMemoryGB       int    `json:"minMemoryGb"`
 	MaxPricePerSecond string `json:"maxPricePerSecond"`
 	SortBy            string `json:"sortBy"` // "price" (default), "memory"
@@ -149,13 +155,59 @@ func (h *RentalHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
+	// Validate on-chain deposit balance (DEBT-02)
+	if h.balanceValidator != nil {
+		// Parse price from request
+		pricePerSecond := new(big.Int)
+		_, ok := pricePerSecond.SetString(req.PricePerSecond, 10)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid pricePerSecond format",
+				"code":  "VAL_001",
+			})
+			return
+		}
+
+		// Calculate minimum required deposit (1 hour of rental)
+		minDuration := big.NewInt(3600) // 1 hour in seconds
+		requiredAmount := new(big.Int).Mul(pricePerSecond, minDuration)
+
+		// Validate on-chain balance
+		userAddr := common.HexToAddress(userAddress)
+		hasSufficient, currentBalance, err := h.balanceValidator.ValidateDepositBalance(
+			c.Request.Context(),
+			userAddr,
+			requiredAmount,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to validate balance",
+				"code":  "BAL_001",
+			})
+			return
+		}
+
+		if !hasSufficient {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "예치금이 부족합니다", // Korean: Insufficient deposit
+				"code":  "BAL_002",
+				"details": gin.H{
+					"required": requiredAmount.String(),
+					"current":  currentBalance.String(),
+				},
+			})
+			return
+		}
+	}
+
 	// SessionManager.CreateSession looks up the Node by ID to get ProviderAddress,
-	// then creates a PENDING session with UserAddress, ProviderAddress, NodeID, PricePerSecond
+	// then creates a PENDING session with UserAddress, ProviderAddress, NodeID, PricePerSecond, DockerImage
 	session, err := h.sessionManager.CreateSession(
 		c.Request.Context(),
 		userAddress,
 		req.NodeID,
 		req.PricePerSecond,
+		"", // Use default image for now (will be extended in Task 3)
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
@@ -464,6 +516,124 @@ func convertNodes(nodes []*domain.Node) []*ProviderInfo {
 		}
 	}
 	return result
+}
+
+// ExtendSessionRequest represents a request to extend a session
+type ExtendSessionRequest struct {
+	ExtensionMinutes int    `json:"extensionMinutes" binding:"required"`
+	IdempotencyKey   string `json:"idempotencyKey"`
+}
+
+// ExtendSessionResponse represents the extension result
+type ExtendSessionResponse struct {
+	Success          bool   `json:"success"`
+	NewExpiration    string `json:"newExpiration"`
+	ExtensionMinutes int    `json:"extensionMinutes"`
+	ExtensionCost    string `json:"extensionCost"`
+	ExtensionCount   int    `json:"extensionCount"`
+	Message          string `json:"message"`
+}
+
+// ExtendSessionErrorResponse for insufficient balance case
+type ExtendSessionErrorResponse struct {
+	Error   string `json:"error"`
+	Code    string `json:"code"`
+	Details struct {
+		Required  string `json:"required,omitempty"`
+		Current   string `json:"current,omitempty"`
+		Shortfall string `json:"shortfall,omitempty"`
+	} `json:"details,omitempty"`
+}
+
+// HandleExtendSession handles POST /api/v1/rentals/:id/extend
+// Extends a running session by the specified duration
+func (h *RentalHandler) HandleExtendSession(c *gin.Context) {
+	sessionID := c.Param("id")
+
+	// Get authenticated user
+	providerID, exists := c.Get("provider_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	// Load session and verify ownership
+	session, err := h.sessionRepo.GetByID(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.UserAddress != provider.WalletAddress {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+		return
+	}
+
+	// Parse request
+	var req ExtendSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "extensionMinutes required"})
+		return
+	}
+
+	// Call session manager
+	result, err := h.sessionManager.ExtendSession(
+		c.Request.Context(),
+		sessionID,
+		req.ExtensionMinutes,
+		req.IdempotencyKey,
+		provider.WalletAddress,
+	)
+	if err != nil {
+		// Handle specific errors
+		if errors.Is(err, sessions.ErrSessionNotRunning) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Session is not running",
+				"code":  "EXT_001",
+			})
+			return
+		}
+		if errors.Is(err, sessions.ErrInsufficientBalance) {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":   "Insufficient balance for extension",
+				"code":    "EXT_002",
+				"message": err.Error(),
+			})
+			return
+		}
+		if errors.Is(err, sessions.ErrExtensionLimitReached) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Maximum extension limit reached",
+				"code":  "EXT_003",
+			})
+			return
+		}
+		if errors.Is(err, sessions.ErrMinimumDuration) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Extension must be at least 30 minutes",
+				"code":  "EXT_004",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to extend session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, ExtendSessionResponse{
+		Success:          true,
+		NewExpiration:    result.NewExpiration.Format(time.RFC3339),
+		ExtensionMinutes: result.ExtensionMinutes,
+		ExtensionCost:    result.ExtensionCost.String(),
+		ExtensionCount:   result.ExtensionCount,
+		Message:          "Session extended successfully",
+	})
 }
 
 func convertSessions(sessions []*domain.RentalSession) []*SessionInfo {

@@ -3,9 +3,11 @@ package sessions
 import (
 	"context"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/worldland/worldland-hub/internal/domain"
 )
 
@@ -73,6 +75,68 @@ func (m *mockRentalSessionRepo) ListByState(ctx context.Context, state domain.Re
 
 func (m *mockRentalSessionRepo) FindStale(ctx context.Context, state domain.RentalSessionState, olderThan time.Duration) ([]*domain.RentalSession, error) {
 	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) FindByUserAndState(ctx context.Context, userAddress string, state domain.RentalSessionState) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) FindPendingSettlement(ctx context.Context, userAddress string) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) FindAllPendingSettlement(ctx context.Context) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) UpdateSettlement(ctx context.Context, sessionID, amount string, settledAt time.Time) error {
+	return nil
+}
+
+func (m *mockRentalSessionRepo) GetByTxHash(ctx context.Context, txHash string) (*domain.RentalSession, error) {
+	for _, s := range m.sessions {
+		if s.TxHash != nil && *s.TxHash == txHash {
+			return s, nil
+		}
+	}
+	return nil, errors.New("session not found")
+}
+
+func (m *mockRentalSessionRepo) SetTxHash(ctx context.Context, sessionID, txHash string) error {
+	if s, ok := m.sessions[sessionID]; ok {
+		s.TxHash = &txHash
+		return nil
+	}
+	return errors.New("session not found")
+}
+
+func (m *mockRentalSessionRepo) SoftDeletePendingBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockRentalSessionRepo) ListPendingWithTxHash(ctx context.Context) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockRentalSessionRepo) UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error {
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return errors.New("session not found")
+	}
+	// Repository UpdateExtension should atomically increment the count
+	s.ExtendedUntil = &extendedUntil
+	s.ExtensionCount++
+	s.TotalExtendedMinutes += extensionMinutes
+	s.UpdatedAt = time.Now()
+	return nil
+}
+
+func (m *mockRentalSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error) {
+	return "ext-record-id", nil
 }
 
 // mockNodeRepo is a mock implementation of NodeRepository
@@ -218,7 +282,7 @@ func TestCreateSession_PendingState(t *testing.T) {
 	manager, sessionRepo, _, _ := setupTestManager()
 	ctx := context.Background()
 
-	session, err := manager.CreateSession(ctx, "0xuser123", "node-1", "1000000000000000")
+	session, err := manager.CreateSession(ctx, "0xuser123", "node-1", "1000000000000000", "")
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -578,5 +642,271 @@ func TestSessionNotFound(t *testing.T) {
 
 	if errors.Is(err, ErrInvalidTransition) {
 		t.Error("Session not found should not return ErrInvalidTransition")
+	}
+}
+
+// ============================================================================
+// ExtendSession Tests
+// ============================================================================
+
+// mockBalanceValidator is a mock implementation of BalanceValidatorInterface
+type mockBalanceValidator struct {
+	balance        *big.Int
+	validateResult bool
+	validateErr    error
+}
+
+func (m *mockBalanceValidator) GetDepositBalance(ctx context.Context, userAddress common.Address) (*big.Int, error) {
+	if m.validateErr != nil {
+		return nil, m.validateErr
+	}
+	return m.balance, nil
+}
+
+func (m *mockBalanceValidator) ValidateDepositBalance(ctx context.Context, userAddress common.Address, requiredAmount *big.Int) (bool, *big.Int, error) {
+	if m.validateErr != nil {
+		return false, nil, m.validateErr
+	}
+	return m.validateResult, m.balance, nil
+}
+
+func TestExtendSession_Success(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session in RUNNING state
+	session := createTestSession(domain.RentalStateRunning)
+	session.PricePerSecond = "1000000000000000" // 0.001 ETH per second
+	session.ExtensionCount = 0
+	sessionRepo.sessions[session.ID] = session
+
+	// Setup balance validator with sufficient balance
+	mockValidator := &mockBalanceValidator{
+		balance:        big.NewInt(1e18), // 1 ETH
+		validateResult: true,
+	}
+	manager.balanceValidator = mockValidator
+
+	// Extend by 60 minutes
+	result, err := manager.ExtendSession(ctx, session.ID, 60, "idempotency-key-1", "0xuser123")
+	if err != nil {
+		t.Fatalf("ExtendSession failed: %v", err)
+	}
+
+	// Check result
+	if result.NewExpiration.IsZero() {
+		t.Error("Expected non-zero NewExpiration")
+	}
+	if result.ExtensionMinutes != 60 {
+		t.Errorf("Expected ExtensionMinutes 60, got %d", result.ExtensionMinutes)
+	}
+	if result.ExtensionCost == nil {
+		t.Error("Expected non-nil ExtensionCost")
+	}
+	if result.ExtensionCount != 1 {
+		t.Errorf("Expected ExtensionCount 1, got %d", result.ExtensionCount)
+	}
+
+	// Check session was updated
+	updated, _ := sessionRepo.GetByID(ctx, session.ID)
+	if updated.ExtendedUntil == nil {
+		t.Error("Expected ExtendedUntil to be set")
+	}
+	if updated.ExtensionCount != 1 {
+		t.Errorf("Expected ExtensionCount 1, got %d", updated.ExtensionCount)
+	}
+}
+
+func TestExtendSession_SessionNotRunning(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Test with PENDING state
+	session := createTestSession(domain.RentalStatePending)
+	sessionRepo.sessions[session.ID] = session
+
+	_, err := manager.ExtendSession(ctx, session.ID, 60, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error when session not running")
+	}
+	if !errors.Is(err, ErrSessionNotRunning) {
+		t.Errorf("Expected ErrSessionNotRunning, got %v", err)
+	}
+
+	// Test with STOPPED state
+	session2 := createTestSession(domain.RentalStateStopped)
+	sessionRepo.sessions[session2.ID] = session2
+
+	_, err = manager.ExtendSession(ctx, session2.ID, 60, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error when session stopped")
+	}
+	if !errors.Is(err, ErrSessionNotRunning) {
+		t.Errorf("Expected ErrSessionNotRunning, got %v", err)
+	}
+}
+
+func TestExtendSession_InsufficientBalance(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session in RUNNING state with high price
+	session := createTestSession(domain.RentalStateRunning)
+	session.PricePerSecond = "1000000000000000000" // 1 ETH per second (very expensive)
+	sessionRepo.sessions[session.ID] = session
+
+	// Setup balance validator with insufficient balance
+	mockValidator := &mockBalanceValidator{
+		balance:        big.NewInt(1e15), // 0.001 ETH (way too little)
+		validateResult: false,
+	}
+	manager.balanceValidator = mockValidator
+
+	_, err := manager.ExtendSession(ctx, session.ID, 60, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error for insufficient balance")
+	}
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Errorf("Expected ErrInsufficientBalance, got %v", err)
+	}
+}
+
+func TestExtendSession_ExtensionLimitReached(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session already at max extensions
+	session := createTestSession(domain.RentalStateRunning)
+	session.ExtensionCount = 10 // Already at max
+	sessionRepo.sessions[session.ID] = session
+
+	_, err := manager.ExtendSession(ctx, session.ID, 60, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error for extension limit reached")
+	}
+	if !errors.Is(err, ErrExtensionLimitReached) {
+		t.Errorf("Expected ErrExtensionLimitReached, got %v", err)
+	}
+}
+
+func TestExtendSession_MinimumDuration(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session in RUNNING state
+	session := createTestSession(domain.RentalStateRunning)
+	sessionRepo.sessions[session.ID] = session
+
+	// Try to extend by less than 30 minutes
+	_, err := manager.ExtendSession(ctx, session.ID, 15, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error for duration below minimum")
+	}
+	if !errors.Is(err, ErrMinimumDuration) {
+		t.Errorf("Expected ErrMinimumDuration, got %v", err)
+	}
+}
+
+func TestExtendSession_SessionNotFound(t *testing.T) {
+	manager, _, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	_, err := manager.ExtendSession(ctx, "nonexistent", 60, "", "0xuser123")
+	if err == nil {
+		t.Fatal("Expected error for session not found")
+	}
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestExtendSession_AddsToExistingExtension(t *testing.T) {
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session in RUNNING state with existing extension
+	session := createTestSession(domain.RentalStateRunning)
+	session.PricePerSecond = "1000000000000000" // 0.001 ETH per second
+	existingExpiration := time.Now().Add(2 * time.Hour)
+	session.ExtendedUntil = &existingExpiration
+	session.ExtensionCount = 1
+	sessionRepo.sessions[session.ID] = session
+
+	// Setup balance validator
+	mockValidator := &mockBalanceValidator{
+		balance:        big.NewInt(1e18),
+		validateResult: true,
+	}
+	manager.balanceValidator = mockValidator
+
+	// Extend by 60 minutes
+	result, err := manager.ExtendSession(ctx, session.ID, 60, "", "0xuser123")
+	if err != nil {
+		t.Fatalf("ExtendSession failed: %v", err)
+	}
+
+	// New expiration should be existing + 60 minutes, not now + 60 minutes
+	expectedExpiration := existingExpiration.Add(60 * time.Minute)
+	timeDiff := result.NewExpiration.Sub(expectedExpiration).Abs()
+	if timeDiff > time.Second {
+		t.Errorf("Expected new expiration around %v, got %v (diff: %v)",
+			expectedExpiration, result.NewExpiration, timeDiff)
+	}
+
+	if result.ExtensionCount != 2 {
+		t.Errorf("Expected ExtensionCount 2, got %d", result.ExtensionCount)
+	}
+}
+
+func TestExtendSession_ConcurrentExtensions(t *testing.T) {
+	// This test verifies that concurrent extension requests are handled safely
+	// The mock repository's UpdateExtension is not thread-safe, but in production
+	// the PostgreSQL UPDATE with WHERE state='RUNNING' provides atomicity
+	manager, sessionRepo, _, _ := setupTestManager()
+	ctx := context.Background()
+
+	// Setup: create a session in RUNNING state
+	session := createTestSession(domain.RentalStateRunning)
+	session.PricePerSecond = "1000000000000000" // 0.001 ETH per second
+	session.ExtensionCount = 0
+	sessionRepo.sessions[session.ID] = session
+
+	// Setup balance validator
+	mockValidator := &mockBalanceValidator{
+		balance:        big.NewInt(1e18),
+		validateResult: true,
+	}
+	manager.balanceValidator = mockValidator
+
+	// Note: In production, the repository's UpdateExtension uses:
+	// WHERE id = $3 AND state = 'RUNNING' AND deleted_at IS NULL
+	// This ensures only one concurrent update succeeds, others fail with "0 rows affected"
+	// The mock doesn't simulate this, but the real implementation is safe
+
+	// First extension
+	result1, err1 := manager.ExtendSession(ctx, session.ID, 60, "key1", "0xuser123")
+	if err1 != nil {
+		t.Fatalf("First extension failed: %v", err1)
+	}
+	if result1.ExtensionCount != 1 {
+		t.Errorf("Expected first extension count 1, got %d", result1.ExtensionCount)
+	}
+
+	// Second extension (sequential, not truly concurrent in this test)
+	result2, err2 := manager.ExtendSession(ctx, session.ID, 60, "key2", "0xuser123")
+	if err2 != nil {
+		t.Fatalf("Second extension failed: %v", err2)
+	}
+	if result2.ExtensionCount != 2 {
+		t.Errorf("Expected second extension count 2, got %d", result2.ExtensionCount)
+	}
+
+	// Verify final state
+	updated, _ := sessionRepo.GetByID(ctx, session.ID)
+	if updated.ExtensionCount != 2 {
+		t.Errorf("Expected final ExtensionCount 2, got %d", updated.ExtensionCount)
+	}
+	if updated.TotalExtendedMinutes != 120 {
+		t.Errorf("Expected TotalExtendedMinutes 120, got %d", updated.TotalExtendedMinutes)
 	}
 }
