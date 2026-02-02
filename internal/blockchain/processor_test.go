@@ -95,6 +95,79 @@ func (m *MockRentalSessionRepo) FindStale(ctx context.Context, state domain.Rent
 	return args.Get(0).([]*domain.RentalSession), args.Error(1)
 }
 
+func (m *MockRentalSessionRepo) FindByUserAndState(ctx context.Context, userAddress string, state domain.RentalSessionState) ([]*domain.RentalSession, error) {
+	args := m.Called(ctx, userAddress, state)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) FindPendingSettlement(ctx context.Context, userAddress string) ([]*domain.RentalSession, error) {
+	args := m.Called(ctx, userAddress)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) FindAllPendingSettlement(ctx context.Context) ([]*domain.RentalSession, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) UpdateSettlement(ctx context.Context, sessionID, amount string, settledAt time.Time) error {
+	args := m.Called(ctx, sessionID, amount, settledAt)
+	return args.Error(0)
+}
+
+func (m *MockRentalSessionRepo) GetByTxHash(ctx context.Context, txHash string) (*domain.RentalSession, error) {
+	args := m.Called(ctx, txHash)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) SetTxHash(ctx context.Context, sessionID, txHash string) error {
+	args := m.Called(ctx, sessionID, txHash)
+	return args.Error(0)
+}
+
+func (m *MockRentalSessionRepo) SoftDeletePendingBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	args := m.Called(ctx, cutoff)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) ListPendingWithTxHash(ctx context.Context) ([]*domain.RentalSession, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*domain.RentalSession, error) {
+	args := m.Called(ctx, cutoff)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.RentalSession), args.Error(1)
+}
+
+func (m *MockRentalSessionRepo) UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error {
+	args := m.Called(ctx, sessionID, extendedUntil, extensionMinutes)
+	return args.Error(0)
+}
+
+func (m *MockRentalSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error) {
+	args := m.Called(ctx, sessionID, extensionMinutes, costEstimate, idempotencyKey)
+	return args.String(0), args.Error(1)
+}
+
 // Test fixtures
 var (
 	testUserAddr     = common.HexToAddress("0x1234567890123456789012345678901234567890")
