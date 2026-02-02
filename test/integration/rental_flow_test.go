@@ -285,10 +285,10 @@ func TestRentalFlow_ConcurrentRentals(t *testing.T) {
 	user1 := "0x" + uuid.New().String()[:40]
 	user2 := "0x" + uuid.New().String()[:40]
 
-	session1, err := sessionManager.CreateSession(ctx, user1, node1.ID, node1.PricePerSecond)
+	session1, err := sessionManager.CreateSession(ctx, user1, node1.ID, node1.PricePerSecond, "")
 	require.NoError(t, err)
 
-	session2, err := sessionManager.CreateSession(ctx, user2, node2.ID, node2.PricePerSecond)
+	session2, err := sessionManager.CreateSession(ctx, user2, node2.ID, node2.PricePerSecond, "")
 	require.NoError(t, err)
 
 	// Both sessions should be independent
@@ -335,7 +335,7 @@ func TestRentalFlow_SettlementBatch(t *testing.T) {
 	user := "0x" + uuid.New().String()[:40]
 
 	// Session 1: 10 minutes rental
-	session1, err := sessionManager.CreateSession(ctx, user, node.ID, node.PricePerSecond)
+	session1, err := sessionManager.CreateSession(ctx, user, node.ID, node.PricePerSecond, "")
 	require.NoError(t, err)
 	start1 := time.Now().Add(-20 * time.Minute)
 	end1 := time.Now().Add(-10 * time.Minute)
@@ -345,7 +345,7 @@ func TestRentalFlow_SettlementBatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Session 2: 5 minutes rental
-	session2, err := sessionManager.CreateSession(ctx, user, node.ID, node.PricePerSecond)
+	session2, err := sessionManager.CreateSession(ctx, user, node.ID, node.PricePerSecond, "")
 	require.NoError(t, err)
 	start2 := time.Now().Add(-15 * time.Minute)
 	end2 := time.Now().Add(-10 * time.Minute)
