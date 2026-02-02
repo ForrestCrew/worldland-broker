@@ -2,16 +2,36 @@
 
 ## Current Position
 
-**Phase:** 22-hub-proxy-integration (Phase 22 of 19)
-**Plan:** 05 of ?? complete
-**Status:** In progress
-**Last activity:** 2026-02-02 - Completed 22-05-PLAN.md (Hub-K8s Worker Integration)
+**Phase:** 24-base-image-selection (Phase 24)
+**Plan:** 03 of 03 complete
+**Status:** Phase complete
+**Last activity:** 2026-02-03 - Completed 24-03-PLAN.md (Image Selection Flow)
 
-**Progress:** [████████████████████] Phase 22 in progress
+**Progress:** [████████████████████] Phase 24 complete
 
 ## Phase Summary
 
-### Phase 22: Hub-Proxy Integration (IN PROGRESS)
+### Phase 24: Base Image Selection (COMPLETE)
+
+Completed plans:
+- **24-01:** Database schema (migrations/009_base_images.sql) and domain model (domain/image.go)
+- **24-02:** ImageValidator for Docker image format validation (internal/images/validator.go)
+- **24-03:** Image selection wired through rental flow (SessionManager, Repository, Handler, Worker)
+
+Phase 24 delivered:
+- base_images table with preset GPU container images (PyTorch, TensorFlow, CUDA)
+- docker_image column in rental_sessions table
+- BaseImage domain model with Category enum
+- ImageRepository interface and PostgreSQL implementation
+- ImageValidator with Docker image reference pattern validation
+- IsPresetID helper for UUID detection
+- SessionManager.CreateSession accepts and resolves dockerImage parameter
+- Repository persists docker_image field
+- HTTP handler accepts Image in CreateSessionRequest
+- GET /api/v1/images endpoint for preset listing
+- ConfirmationWorker uses session.DockerImage for K8s Pod and Node API
+
+### Phase 22: Hub-Proxy Integration (COMPLETE)
 
 Completed plans:
 - **22-01:** Tenant isolation (namespaces, quotas, network policies)
@@ -19,9 +39,9 @@ Completed plans:
 - **22-03:** JobManager with CreateGPUSession and SSH password injection
 - **22-03b:** JobManager delete/query operations
 - **22-04:** PodWatcher with Informer-based state synchronization
-- **22-05:** Hub-K8s Worker Integration (JUST COMPLETED)
+- **22-05:** Hub-K8s Worker Integration
 
-Phase 22 delivered so far:
+Phase 22 delivered:
 - TenantOrchestrator: namespace management with resource quotas
 - GPUJobSpec and SSHConnectionInfo types
 - JobManager: CreateGPUSession, DeleteGPUSession, GetSSHConnectionInfo
@@ -85,8 +105,18 @@ Phase 14 delivered:
 | Blockchain confirmation precedence | 22-05 | Blockchain is source of truth for session state, K8s only handles infrastructure failures | K8sStateHandler skips state transition when Pod Running but session PENDING |
 | Optional K8s integration | 22-05 | Hub can run without K8s configured (backward compatibility) | Workers have WithK8s() builder methods and nil checks |
 | Node API remains primary | 22-05 | Existing Node API flow must continue working | K8s Pod creation is additive, failures are non-fatal |
+| Image resolution at creation | 24-03 | Validates upfront, stores resolved docker_image string | Clean flow, no runtime resolution needed |
+| Empty image defaults to DefaultImage | 24-03 | Backward compatible, UUID resolves preset, custom URL validated | Flexible image selection |
 
 ### Technical Stack
+
+**Added in Phase 24:**
+- base_images table for preset GPU container images
+- BaseImage domain model with ImageCategory enum
+- ImageRepository interface and PostgreSQL implementation
+- ImageValidator for Docker image format validation
+- IsPresetID helper for UUID detection
+- GET /api/v1/images endpoint for preset listing
 
 **Added in Phase 22:**
 - TenantOrchestrator for namespace management
@@ -115,15 +145,26 @@ Phase 14 delivered:
 - tx_hash as confirmation-in-progress marker
 - Background worker for blockchain verification
 - Partial unique index for idempotency
+- Optional dependency injection with builder methods
+- Image resolution with fallback chain
 
 ### Architecture Notes
 
+**Image Selection Flow (Phase 24):**
+1. User calls POST /api/v1/rentals with optional `image` field
+2. SessionManager.resolveDockerImage handles:
+   - Empty string -> domain.DefaultImage
+   - UUID -> ImageRepository.GetByID (preset lookup)
+   - Custom URL -> ImageValidator.ValidateFormat
+3. Resolved docker_image stored in rental_sessions
+4. ConfirmationWorker uses session.DockerImage for K8s Pod and Node API
+
 **ADR-001 Confirmation Flow:**
 1. User creates session (PENDING, tx_hash=NULL)
-2. User submits tx → SetTxHash links session to transaction
+2. User submits tx -> SetTxHash links session to transaction
 3. ConfirmationWorker verifies tx on-chain
-4. If confirmed: PENDING → RUNNING
-5. If unconfirmed after timeout: PENDING → soft deleted
+4. If confirmed: PENDING -> RUNNING
+5. If unconfirmed after timeout: PENDING -> soft deleted
 
 **TTL Protection:**
 - Sessions WITH tx_hash: preserved (confirmation in progress)
@@ -145,25 +186,22 @@ None
 
 ## Files & Structure
 
-### Key Files Created (Phase 14)
+### Key Files Created (Phase 24)
 ```
-migrations/007_adr_001_confirmation.sql               # Schema changes
-internal/adapters/http/confirmation_handler.go        # ConfirmRental, GetSession handlers
-internal/adapters/http/confirmation_handler_test.go   # Handler tests
-internal/blockchain/verifier.go                       # TransactionVerifier
-internal/blockchain/verifier_test.go                  # Verifier tests
-internal/sessions/confirmation_worker.go              # Background verification worker
-internal/sessions/confirmation_worker_test.go         # Worker tests
+migrations/009_base_images.sql                    # Schema: base_images table, docker_image column
+internal/domain/image.go                          # BaseImage domain model, ImageCategory enum
+internal/adapters/postgres/image_repository.go    # PostgreSQL image repository
+internal/images/validator.go                      # Docker image format validator
 ```
 
-### Key Files Modified (Phase 14)
+### Key Files Modified (Phase 24)
 ```
-internal/domain/rental.go                   # DeletedAt field
-internal/domain/interfaces.go               # New repository methods
-internal/adapters/postgres/rental_repo.go   # Repository implementation
-internal/sessions/timeouts.go               # Soft delete logic
-internal/sessions/timeouts_test.go          # Updated tests
-cmd/hub/main.go                             # Wire SoftDeleter
+internal/sessions/manager.go                      # CreateSession with dockerImage, resolveDockerImage
+internal/adapters/postgres/rental_repo.go         # docker_image persistence
+internal/adapters/http/rental_handler.go          # Image field, ListImages handler
+internal/sessions/confirmation_worker.go          # session.DockerImage for K8s/Node
+internal/domain/rental.go                         # DockerImage field (from 24-01)
+internal/domain/interfaces.go                     # ImageRepository interface (from 24-01)
 ```
 
 ### Key Files Created (Phase 22)
@@ -180,16 +218,27 @@ internal/k8s/watcher.go                     # PodWatcher with Informer-based sta
 internal/k8s/watcher_test.go                # Watcher tests
 ```
 
+### Key Files Created (Phase 14)
+```
+migrations/007_adr_001_confirmation.sql               # Schema changes
+internal/adapters/http/confirmation_handler.go        # ConfirmRental, GetSession handlers
+internal/adapters/http/confirmation_handler_test.go   # Handler tests
+internal/blockchain/verifier.go                       # TransactionVerifier
+internal/blockchain/verifier_test.go                  # Verifier tests
+internal/sessions/confirmation_worker.go              # Background verification worker
+internal/sessions/confirmation_worker_test.go         # Worker tests
+```
+
 ## Session Continuity
 
-**Last session:** 2026-02-02T12:56:33Z
-**Stopped at:** Completed 22-05-PLAN.md (Hub-K8s Worker Integration)
+**Last session:** 2026-02-03T02:40:00Z
+**Stopped at:** Completed 24-03-PLAN.md (Image Selection Flow)
 **Resume file:** None
 
 **Next steps:**
-1. Plan 22-06: Wire PodWatcher to Hub lifecycle (main.go integration)
-2. Continue Phase 22 remaining plans for full Hub-K8s integration
-3. Consider SSH password storage in session domain model
+1. Phase 24 complete - base image selection feature fully functional
+2. Future enhancements could include admin API for managing preset images
+3. Consider per-provider image allowlists
 
 ## Test Coverage
 
@@ -204,6 +253,7 @@ internal/k8s/watcher_test.go                # Watcher tests
 - Query repository tests (historical queries)
 - Timeout enforcer tests (soft delete behavior)
 - K8s JobManager tests (Pod lifecycle, SSH info, deletion) - Phase 22
+- Image validator tests (format validation) - Phase 24
 
 **Success Criteria Coverage:**
 - HUB-01: Provider matching
@@ -221,29 +271,18 @@ internal/k8s/watcher_test.go                # Watcher tests
 - IDXR-03: Graceful shutdown
 - IDXR-04: Frontend history hooks
 - ADR-001: Confirmation flow with tx_hash protection
+- IMG-01: Preset GPU container images (PyTorch, TensorFlow, CUDA)
+- IMG-02: Custom image URL validation
+- IMG-03: Image selection in rental flow
+- IMG-04: Image used for K8s Pod creation
 
-## Phase 22 Status (IN PROGRESS)
-
-**Completed:**
-- 22-01: Tenant isolation with namespaces
-- 22-02: K8s types and naming helpers
-- 22-03: JobManager CreateGPUSession
-- 22-03b: JobManager delete/query operations
-- 22-04: PodWatcher with Informer-based state sync
-- 22-05: Hub-K8s Worker Integration
-
-**Pending:**
-- 22-06: Wire PodWatcher to Hub lifecycle (main.go)
-- Additional Phase 22 plans (if any)
-
-## Phase 14 Completion Status
+## Phase 24 Completion Status
 
 **Completed:**
-- 14-01: Database schema and repository methods
-- 14-02: SetTxHash handler
-- 14-03: ConfirmationWorker
-- 14-04: TTL cleanup with soft delete
+- 24-01: Database schema and domain model
+- 24-02: ImageValidator for format validation
+- 24-03: Image selection wired through rental flow
 
 ---
-*Last updated: 2026-02-02T12:58:44Z*
-*Phase: 22-hub-proxy-integration (IN PROGRESS)*
+*Last updated: 2026-02-03T02:40:00Z*
+*Phase: 24-base-image-selection (COMPLETE)*
