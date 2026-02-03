@@ -220,9 +220,9 @@ npm test       # Run E2E tests
 make down      # Stop infrastructure
 ```
 
-## E2E Test Coverage (V2)
+## E2E Test Coverage (v1.4)
 
-### Fully Verified ✅
+### K8s E2E Path (Phase 25) ✅
 
 | Component | Test Coverage | Description |
 |-----------|---------------|-------------|
@@ -236,61 +236,89 @@ make down      # Stop infrastructure
 | **Blockchain Rental Start** | ✅ Complete | `startRental()` transaction, event emission |
 | **Blockchain Rental Stop** | ✅ Complete | `stopRental()` transaction, state verification |
 | **PostgreSQL Integration** | ✅ Complete | All CRUD operations (providers, nodes, sessions) |
+| **K8s Pod Provisioning** | ✅ Complete | Pod created in tenant namespace with proper labels |
+| **K8s Tenant Isolation** | ✅ Complete | Namespace per user, ResourceQuota, NetworkPolicy |
+| **SSH Connection Info** | ✅ Complete | Host, port, password returned from Hub API |
+| **Settlement Verification** | ✅ Complete | Settlement data available after terminate |
+
+### Node E2E Path (Phase 26-27) ✅
+
+| Component | Test Coverage | Description |
+|-----------|---------------|-------------|
+| **Node mTLS Auto-Registration** | ✅ Complete | Node auto-registers using certificate CN |
+| **Node Discovery** | ✅ Complete | Renter discovers registered nodes via API |
+| **2-User Rental Flow** | ✅ Complete | Provider + Renter full lifecycle |
+| **Blockchain Integration** | ✅ Complete | Real deposit, startRental, stopRental transactions |
 
 ### Not Yet Tested ❌
 
 | Component | Status | Reason |
 |-----------|--------|--------|
-| **Hub → Node Communication** | ❌ | Node service not running in E2E environment |
-| **K8s Pod Provisioning** | ❌ | Requires real GPU node with K8s integration |
-| **SSH Access** | ❌ | Depends on Node service and K8s pod |
+| **Actual SSH Connection** | ❌ | SSH-enabled container image not deployed |
 | **GPU Container Execution** | ❌ | Requires actual GPU hardware |
-| **Settlement Flow** | ❌ | Provider payment claiming not tested |
 | **Session Extension** | ❌ | `extend` API not called in current tests |
-| **Session Timeout** | ❌ | Time-based expiration not tested |
+| **Session Timeout** | ❌ | Time-based expiration not tested in E2E |
+| **K8s + Node Integration** | ❌ | Combined K8s tenant + Node provisioning not tested |
 
 ### Test Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  E2E Test Coverage                                          │
+│  E2E Test Coverage (v1.4)                                   │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  [Renter] ──SIWE──→ [Hub] ──SQL──→ [PostgreSQL]  ✅ Tested │
-│     │                  │                                    │
-│     │                  ├──HTTP──→ [Node]          ❌ Not Yet│
-│     │                  │             │                      │
-│     │                  │         [K8s Pod]        ❌ Not Yet│
-│     │                  │             │                      │
-│     │                  │         [SSH Access]     ❌ Not Yet│
-│     │                  │                                    │
-│     └──eth_call──→ [Hardhat Blockchain]           ✅ Tested │
-│                        │                                    │
-│  [Provider] ─SIWE─→ [Hub]                         ✅ Tested │
+│  ┌── K8s Path (Phase 25) ────────────────────────────────┐  │
+│  │                                                       │  │
+│  │  [Renter] ──SIWE──→ [Hub] ──SQL──→ [PostgreSQL]  ✅  │  │
+│  │     │                  │                              │  │
+│  │     │                  ├──K8s API──→ [Kind Cluster]   │  │
+│  │     │                  │                │             │  │
+│  │     │                  │            [K8s Pod] ✅      │  │
+│  │     │                  │                │             │  │
+│  │     │                  │          [SSH Info] ✅       │  │
+│  │     │                  │                              │  │
+│  │     └──eth_call──→ [Hardhat Blockchain]          ✅  │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌── Node Path (Phase 26-27) ────────────────────────────┐  │
+│  │                                                       │  │
+│  │  [Provider] ──mTLS──→ [Hub] ←── [worldland-node] ✅  │  │
+│  │     │                    │                            │  │
+│  │     │                    ├──SQL──→ [PostgreSQL]  ✅  │  │
+│  │     │                    │                            │  │
+│  │  [Renter] ──SIWE──→ [Hub] ──Discover Nodes──→  ✅    │  │
+│  │     │                                                 │  │
+│  │     └──eth_call──→ [Hardhat Blockchain]          ✅  │  │
+│  └───────────────────────────────────────────────────────┘  │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Running E2E Tests
 
+#### K8s E2E (Phase 25)
 ```bash
-# From e2e directory
 cd ../e2e
+make up                    # Start Hub + PostgreSQL + Hardhat + Kind cluster
+make test                  # Run K8s E2E tests
+make down                  # Stop all services
+```
 
-# Start all infrastructure
-make up
+#### Node E2E (Phase 26-27)
+```bash
+cd ../e2e
+make -f Makefile.node up   # Start Hub + PostgreSQL + Hardhat + worldland-node
+NODE_E2E=true make -f Makefile.node test  # Run Node E2E tests
+make -f Makefile.node down # Stop all services
+```
 
-# Run tests
-npm test
+#### Go E2E Tests (from worldland-hub)
+```bash
+# K8s E2E
+USE_EXISTING_CLUSTER=true go test -tags=e2e -v ./test/e2e/... -run TestCompleteRentalFlowE2E
 
-# View test output
-cat test-output.log
-
-# Check service status
-make status
-
-# Stop all services
-make down
+# Node E2E (requires docker-compose.node.yml running)
+NODE_E2E=true go test -tags=e2e -v ./test/e2e/... -run TestNodeBased2UserRentalFlow
 ```
 
 ## API Endpoints
