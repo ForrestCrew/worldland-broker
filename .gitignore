@@ -1,0 +1,27 @@
+# Binaries
+hub
+indexer
+main
+*.test
+bin/
+
+# Planning files
+.planning/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test/e2e/e2e/
+coverage.out
+
+# Environment files (keep .env.example)
+.env
+.env.local

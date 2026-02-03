@@ -65,6 +65,10 @@ func (m *mockNodeRepo2) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockNodeRepo2) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
 type mockSessionRepo2 struct {
 	sessions    map[string]*domain.Session
 	validTokens map[string]string // token -> providerID

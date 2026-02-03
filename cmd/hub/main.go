@@ -32,6 +32,7 @@ import (
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
+	"github.com/worldland/worldland-hub/internal/monitoring"
 	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
 	"github.com/worldland/worldland-hub/internal/sessions"
@@ -58,6 +59,7 @@ func main() {
 	var jobManager *k8s.JobManager
 	var tenantOrch *k8s.TenantOrchestrator
 	var podWatcher *k8s.PodWatcher
+	var metricsCollector *k8s.MetricsCollector
 
 	if cfg.K8s.Enabled {
 		k8sManager := k8s.GetManager()
@@ -79,6 +81,17 @@ func main() {
 			// Create K8s components
 			jobManager = k8s.NewJobManager(clientset, logger)
 			tenantOrch = k8s.NewTenantOrchestrator(clientset, logger)
+
+			// Create MetricsCollector (Phase 23) using same rest.Config
+			restConfig := k8sManager.GetConfig()
+			mc, err := k8s.NewMetricsCollector(restConfig, logger)
+			if err != nil {
+				// Non-fatal: metrics unavailable but K8s works
+				logger.Warn("Failed to create metrics collector", "error", err)
+			} else {
+				metricsCollector = mc
+				logger.Info("Metrics collector initialized")
+			}
 
 			logger.Info("K8s integration initialized",
 				"kubeconfig", cfg.K8s.KubeconfigPath,
@@ -114,7 +127,8 @@ func main() {
 	sessionManager := auth.NewSessionManager(sessionRepo, cfg.SessionTTL)
 
 	// Initialize services
-	nodeService := services.NewNodeService(nodeRepo)
+	// Use provider-aware node service for mTLS auto-registration (Phase 27)
+	nodeService := services.NewNodeServiceWithProvider(nodeRepo, providerRepo)
 
 	// Initialize certificate service
 	certService, err := initCertService(cfg, nodeRepo, logger)
@@ -130,6 +144,20 @@ func main() {
 	// Initialize rental services
 	rentalSessionManager := sessions.NewSessionManager(rentalSessionRepo, nodeRepo, providerRepo)
 	providerMatcher := matching.NewProviderMatcher(nodeRepo)
+
+	// Initialize PodWatcher early so MonitoringService can use it (Phase 23)
+	// The watcher will be started later in a goroutine
+	if jobManager != nil {
+		// Create K8s state handler (from sessions package)
+		k8sStateHandler := sessions.NewK8sStateHandler(
+			rentalSessionManager,
+			rentalSessionRepo,
+			logger,
+		)
+		// Get clientset for watcher
+		clientset, _ := k8s.GetManager().GetClientset()
+		podWatcher = k8s.NewPodWatcher(clientset, k8sStateHandler, logger)
+	}
 
 	// Initialize blockchain components
 	// Hub uses 'rental_events' checkpoint; standalone indexer uses 'indexer_events'
@@ -242,8 +270,28 @@ func main() {
 	queryRepo := indexer.NewQueryRepository(dbPool)
 	historyHandler := httpAdapter.NewHistoryHandler(queryRepo)
 
-	// Create router
-	router := httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, sessionManager)
+	// Initialize MonitoringService and handler (Phase 23)
+	var monitoringHandler *httpAdapter.MonitoringHandler
+	if tenantOrch != nil {
+		monitoringService := monitoring.NewMonitoringService(
+			tenantOrch,
+			metricsCollector, // Can be nil if Metrics Server unavailable
+			podWatcher,       // Can be nil if K8s disabled
+			logger,
+		)
+		monitoringHandler = httpAdapter.NewMonitoringHandler(monitoringService, logger)
+		logger.Info("Monitoring service initialized")
+	}
+
+	// Create router with configuration
+	routerCfg := httpAdapter.RouterConfig{
+		AuthDisabled: cfg.AuthDisabled,
+		ProviderRepo: providerRepo, // For wallet address lookup in auth_disabled mode
+	}
+	if cfg.AuthDisabled {
+		logger.Warn("AUTH_DISABLED is true - authentication is bypassed (for E2E testing only)")
+	}
+	router := httpAdapter.NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, routerCfg)
 
 	// Start HTTP server
 	httpServer := &http.Server{
@@ -275,6 +323,31 @@ func main() {
 		}
 		logger.Info("Received CommandAck", "nodeID", nodeID, "commandID", ack.CommandID, "status", ack.Status)
 		// TODO: Update command status in database (Phase 4)
+	}
+
+	// Wire auto-registration handler - register node when it connects via mTLS (Phase 27)
+	mtlsServer.OnNodeConnected = func(nodeID string) {
+		logger.Info("Node connected via mTLS, auto-registering", "nodeID", nodeID)
+		input := services.AutoRegisterNodeInput{
+			NodeID:      nodeID,
+			GPUType:     "NVIDIA RTX 4090", // Default for E2E, will be updated by node heartbeat
+			MemoryGB:    24,                // Default
+			PricePerSec: "1000000000",      // 1 Gwei per second (fits NUMERIC(18,8))
+			APIEndpoint: fmt.Sprintf("https://%s:8444", nodeID), // Node's mTLS endpoint
+		}
+		if _, err := nodeService.AutoRegisterNode(ctx, input); err != nil {
+			logger.Error("Failed to auto-register node", "nodeID", nodeID, "error", err)
+		} else {
+			logger.Info("Node auto-registered successfully", "nodeID", nodeID)
+		}
+	}
+
+	// Wire node disconnect handler - mark node as offline (Phase 27)
+	mtlsServer.OnNodeDisconnected = func(nodeID string) {
+		logger.Info("Node disconnected", "nodeID", nodeID)
+		if err := nodeService.MarkNodeOffline(ctx, nodeID); err != nil {
+			logger.Error("Failed to mark node offline", "nodeID", nodeID, "error", err)
+		}
 	}
 
 	go func() {
@@ -361,18 +434,8 @@ func main() {
 	}()
 
 	// Start K8s PodWatcher if K8s enabled (Phase 22)
-	if jobManager != nil {
-		// Create K8s state handler (from sessions package)
-		k8sStateHandler := sessions.NewK8sStateHandler(
-			rentalSessionManager,
-			rentalSessionRepo,
-			logger,
-		)
-
-		// Get clientset for watcher
-		clientset, _ := k8s.GetManager().GetClientset()
-		podWatcher = k8s.NewPodWatcher(clientset, k8sStateHandler, logger)
-
+	// Note: PodWatcher was created earlier (with MonitoringService dependencies)
+	if podWatcher != nil {
 		go func() {
 			logger.Info("Starting K8s pod watcher")
 			if err := podWatcher.Start(ctx); err != nil && err != context.Canceled {

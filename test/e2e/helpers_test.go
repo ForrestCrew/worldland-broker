@@ -169,6 +169,253 @@ func (c *HubClient) GetSession(ctx context.Context, sessionID string) (map[strin
 	return result, nil
 }
 
+// ConfirmSession confirms a rental session with txHash
+// POST /api/v1/rentals/:id/confirm (requires auth)
+func (c *HubClient) ConfirmSession(ctx context.Context, sessionID, txHash string) (map[string]interface{}, error) {
+	body := map[string]interface{}{
+		"txHash": txHash,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/rentals/"+sessionID+"/confirm", bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Accept 200, 202 (Accepted - verification pending)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result, nil
+}
+
+// TerminateSession terminates a rental session
+// POST /api/v1/rentals/:id/terminate (requires auth)
+func (c *HubClient) TerminateSession(ctx context.Context, sessionID string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/rentals/"+sessionID+"/terminate", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetSettlement fetches settlement details for a session
+// GET /api/v1/rentals/:id/settlement (requires auth)
+func (c *HubClient) GetSettlement(ctx context.Context, sessionID string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/rentals/"+sessionID+"/settlement", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result, nil
+}
+
+// ListNodes returns all registered nodes from Hub
+// GET /api/v1/nodes (public endpoint)
+func (c *HubClient) ListNodes(ctx context.Context) ([]map[string]interface{}, error) {
+	resp, err := c.doRequest(ctx, "GET", "/api/v1/nodes", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle both array and object with "nodes" field
+	if nodes, ok := resp["nodes"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(nodes))
+		for _, n := range nodes {
+			if node, ok := n.(map[string]interface{}); ok {
+				result = append(result, node)
+			}
+		}
+		return result, nil
+	}
+
+	// If response is directly an array
+	if respArray, ok := resp["data"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(respArray))
+		for _, n := range respArray {
+			if node, ok := n.(map[string]interface{}); ok {
+				result = append(result, node)
+			}
+		}
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response format: %+v", resp)
+}
+
+// DiscoverNodes returns available nodes matching filter criteria
+// GET /api/v1/nodes/available (public endpoint)
+func (c *HubClient) DiscoverNodes(ctx context.Context, filter map[string]interface{}) ([]map[string]interface{}, error) {
+	// Build query params from filter if provided
+	endpoint := "/api/v1/nodes/available"
+	if filter != nil {
+		// Could add query params here for filtering
+		// For now, just use basic endpoint
+	}
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		// Fall back to listing all nodes if discover endpoint doesn't exist
+		return c.ListNodes(ctx)
+	}
+
+	if nodes, ok := resp["nodes"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(nodes))
+		for _, n := range nodes {
+			if node, ok := n.(map[string]interface{}); ok {
+				result = append(result, node)
+			}
+		}
+		return result, nil
+	}
+
+	// Try data field
+	if nodes, ok := resp["data"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(nodes))
+		for _, n := range nodes {
+			if node, ok := n.(map[string]interface{}); ok {
+				result = append(result, node)
+			}
+		}
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response format: %+v", resp)
+}
+
+// ListSessions returns all sessions from Hub
+// GET /api/v1/sessions (requires auth)
+func (c *HubClient) ListSessions(ctx context.Context) ([]map[string]interface{}, error) {
+	resp, err := c.doRequest(ctx, "GET", "/api/v1/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if sessions, ok := resp["sessions"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(sessions))
+		for _, s := range sessions {
+			if session, ok := s.(map[string]interface{}); ok {
+				result = append(result, session)
+			}
+		}
+		return result, nil
+	}
+
+	if sessions, ok := resp["data"].([]interface{}); ok {
+		result := make([]map[string]interface{}, 0, len(sessions))
+		for _, s := range sessions {
+			if session, ok := s.(map[string]interface{}); ok {
+				result = append(result, session)
+			}
+		}
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("unexpected response format: %+v", resp)
+}
+
+// doRequest is a helper for making HTTP requests with common handling
+func (c *HubClient) doRequest(ctx context.Context, method, path string, body map[string]interface{}) (map[string]interface{}, error) {
+	var reqBody io.Reader
+	if body != nil {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+		reqBody = bytes.NewReader(jsonBody)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result, nil
+}
+
 // Health checks if the Hub server is reachable
 // GET /health
 func (c *HubClient) Health(ctx context.Context) error {

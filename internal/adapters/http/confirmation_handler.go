@@ -36,7 +36,9 @@ type ConfirmResponse struct {
 type ConfirmationHandler struct {
 	sessionRepo  domain.RentalSessionRepository
 	providerRepo domain.ProviderRepository
-	jobManager   *k8s.JobManager // Can be nil if K8s disabled
+	nodeRepo     domain.NodeRepository
+	jobManager   *k8s.JobManager       // Can be nil if K8s disabled
+	tenantOrch   *k8s.TenantOrchestrator // Can be nil if K8s disabled
 	logger       *slog.Logger
 }
 
@@ -49,13 +51,22 @@ func NewConfirmationHandler(
 		sessionRepo:  sessionRepo,
 		providerRepo: providerRepo,
 		jobManager:   nil,           // Set via WithK8s for backward compatibility
+		tenantOrch:   nil,           // Set via WithK8s for backward compatibility
 		logger:       slog.Default(), // Use default logger
 	}
 }
 
-// WithK8s sets the K8s JobManager for SSH connection info retrieval
+// WithK8s sets the K8s JobManager and TenantOrchestrator for Pod creation
 func (h *ConfirmationHandler) WithK8s(jobManager *k8s.JobManager) *ConfirmationHandler {
 	h.jobManager = jobManager
+	return h
+}
+
+// WithK8sFull sets all K8s dependencies for E2E mode Pod creation
+func (h *ConfirmationHandler) WithK8sFull(jobManager *k8s.JobManager, tenantOrch *k8s.TenantOrchestrator, nodeRepo domain.NodeRepository) *ConfirmationHandler {
+	h.jobManager = jobManager
+	h.tenantOrch = tenantOrch
+	h.nodeRepo = nodeRepo
 	return h
 }
 
@@ -65,19 +76,31 @@ func (h *ConfirmationHandler) WithK8s(jobManager *k8s.JobManager) *ConfirmationH
 func (h *ConfirmationHandler) ConfirmRental(c *gin.Context) {
 	sessionID := c.Param("id")
 
-	// Get authenticated user
-	providerID, exists := c.Get("provider_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
+	var userAddress string
 
-	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
-		return
+	// Check if auth is disabled (E2E testing mode)
+	if _, authDisabled := c.Get("auth_disabled"); authDisabled {
+		if addr, exists := c.Get("user_address"); exists {
+			userAddress = addr.(string)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user_address required in auth_disabled mode"})
+			return
+		}
+	} else {
+		// Normal auth flow: Get provider ID from auth context
+		providerID, exists := c.Get("provider_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+
+		provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+			return
+		}
+		userAddress = provider.WalletAddress
 	}
-	userAddress := provider.WalletAddress
 
 	// Parse and validate request
 	var req ConfirmRequest
@@ -146,7 +169,7 @@ func (h *ConfirmationHandler) ConfirmRental(c *gin.Context) {
 	// Reload session to get updated state
 	session, _ = h.sessionRepo.GetByID(c.Request.Context(), sessionID)
 
-	// Return 202 Accepted - verification will happen in background
+	// Return 202 Accepted - verification will happen in background by ConfirmationWorker
 	c.JSON(http.StatusAccepted, h.buildConfirmResponse(session))
 }
 
@@ -196,19 +219,31 @@ type GetSessionResponse struct {
 func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 	sessionID := c.Param("id")
 
-	// Get authenticated user
-	providerID, exists := c.Get("provider_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
+	var userAddress string
 
-	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
-		return
+	// Check if auth is disabled (E2E testing mode)
+	if _, authDisabled := c.Get("auth_disabled"); authDisabled {
+		if addr, exists := c.Get("user_address"); exists {
+			userAddress = addr.(string)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user_address required in auth_disabled mode"})
+			return
+		}
+	} else {
+		// Normal auth flow: Get provider ID from auth context
+		providerID, exists := c.Get("provider_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+
+		provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+			return
+		}
+		userAddress = provider.WalletAddress
 	}
-	userAddress := provider.WalletAddress
 
 	// Load session
 	session, err := h.sessionRepo.GetByID(c.Request.Context(), sessionID)

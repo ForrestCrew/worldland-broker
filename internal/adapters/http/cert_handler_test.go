@@ -66,6 +66,10 @@ func (m *mockNodeRepoForCert) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockNodeRepoForCert) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
 // generateTestCAForHandler creates a test CA certificate and key
 func generateTestCAForHandler(t *testing.T) (caCertPEM, caKeyPEM []byte) {
 	t.Helper()

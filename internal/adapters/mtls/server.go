@@ -34,6 +34,13 @@ type Server struct {
 
 	// OnMessage is called when a message is received from a node
 	OnMessage func(nodeID string, msg []byte)
+
+	// OnNodeConnected is called when a node establishes mTLS connection
+	// nodeID is extracted from the client certificate's Common Name
+	OnNodeConnected func(nodeID string)
+
+	// OnNodeDisconnected is called when a node disconnects
+	OnNodeDisconnected func(nodeID string)
 }
 
 // NewServer creates a new mTLS server
@@ -113,7 +120,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 	log.Printf("Node connected: %s", nodeID)
 
 	s.clients.Store(nodeID, conn)
-	defer s.clients.Delete(nodeID)
+	defer func() {
+		s.clients.Delete(nodeID)
+		// Notify disconnection
+		if s.OnNodeDisconnected != nil {
+			s.OnNodeDisconnected(nodeID)
+		}
+	}()
+
+	// Notify connection - trigger auto-registration
+	if s.OnNodeConnected != nil {
+		s.OnNodeConnected(nodeID)
+	}
 
 	// Read messages from node
 	buf := make([]byte, 4096)

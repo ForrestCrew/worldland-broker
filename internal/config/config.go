@@ -55,8 +55,9 @@ type Config struct {
 	NodeClientKeyPath  string
 
 	// Auth
-	SIWEDomain string
-	SessionTTL time.Duration
+	SIWEDomain   string
+	SessionTTL   time.Duration
+	AuthDisabled bool // Disable auth for E2E testing
 
 	// Blockchain
 	Blockchain BlockchainConfig
@@ -137,8 +138,9 @@ func LoadConfig() *Config {
 		NodeClientCertPath: getEnv("NODE_CLIENT_CERT_PATH", "certs/hub-client.crt"),
 		NodeClientKeyPath:  getEnv("NODE_CLIENT_KEY_PATH", "certs/hub-client.key"),
 
-		SIWEDomain: getEnv("SIWE_DOMAIN", "hub.worldland.io"),
-		SessionTTL: 24 * time.Hour,
+		SIWEDomain:   getEnv("SIWE_DOMAIN", "hub.worldland.io"),
+		SessionTTL:   24 * time.Hour,
+		AuthDisabled: os.Getenv("AUTH_DISABLED") == "true",
 
 		Blockchain: BlockchainConfig{
 			RPCEndpoints:    rpcEndpoints,

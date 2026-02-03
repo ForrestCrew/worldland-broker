@@ -124,6 +124,18 @@ func (m *mockConfirmationSessionRepo) ListPendingWithTxHash(ctx context.Context)
 	return result, nil
 }
 
+func (m *mockConfirmationSessionRepo) FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *mockConfirmationSessionRepo) UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error {
+	return nil
+}
+
+func (m *mockConfirmationSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error) {
+	return "", nil
+}
+
 type mockConfirmationNodeRepo struct {
 	nodes map[string]*domain.Node
 }
@@ -156,6 +168,10 @@ func (m *mockConfirmationNodeRepo) Update(ctx context.Context, node *domain.Node
 
 func (m *mockConfirmationNodeRepo) Delete(ctx context.Context, id string) error {
 	return nil
+}
+
+func (m *mockConfirmationNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
 }
 
 type mockConfirmationProviderRepo struct {

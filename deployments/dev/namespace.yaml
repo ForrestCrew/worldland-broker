@@ -1,0 +1,44 @@
+# Test tenant namespace for local K8s development
+# This simulates the namespace-per-user isolation pattern from ADR-K8S-001
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-test
+  labels:
+    worldland.io/tenant: "true"
+    worldland.io/user-id: "test-user-001"
+---
+# Resource quota per ADR-K8S-004: 4 CPU, 16Gi per GPU
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gpu-quota
+  namespace: tenant-test
+spec:
+  hard:
+    # GPU limits
+    requests.nvidia.com/gpu: "2"
+    limits.nvidia.com/gpu: "2"
+    # CPU/Memory per ADR-K8S-004 (4 CPU, 16Gi per GPU * 2 GPUs)
+    requests.cpu: "8"
+    limits.cpu: "16"
+    requests.memory: "32Gi"
+    limits.memory: "64Gi"
+    # Pod count limit
+    pods: "10"
+---
+# LimitRange to set defaults for pods without explicit resource requests
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: tenant-test
+spec:
+  limits:
+  - default:
+      cpu: "4"
+      memory: "16Gi"
+    defaultRequest:
+      cpu: "2"
+      memory: "8Gi"
+    type: Container

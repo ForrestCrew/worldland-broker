@@ -4,8 +4,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/worldland/worldland-hub/internal/adapters/http/middleware"
 	"github.com/worldland/worldland-hub/internal/auth"
+	"github.com/worldland/worldland-hub/internal/domain"
 	intMiddleware "github.com/worldland/worldland-hub/internal/middleware"
 )
+
+// RouterConfig holds optional router configuration
+type RouterConfig struct {
+	AuthDisabled bool                      // Skip authentication (for E2E testing only)
+	ProviderRepo domain.ProviderRepository // For wallet address lookup in auth_disabled mode
+}
 
 // NewRouter creates a new Gin router with all routes configured
 func NewRouter(
@@ -18,6 +25,22 @@ func NewRouter(
 	historyHandler *HistoryHandler,
 	monitoringHandler *MonitoringHandler,
 	sessionManager *auth.SessionManager,
+) *gin.Engine {
+	return NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, RouterConfig{})
+}
+
+// NewRouterWithConfig creates a new Gin router with configuration
+func NewRouterWithConfig(
+	authHandler *AuthHandler,
+	nodeHandler *NodeHandler,
+	certHandler *CertHandler,
+	rentalHandler *RentalHandler,
+	confirmationHandler *ConfirmationHandler,
+	balanceHandler *BalanceHandler,
+	historyHandler *HistoryHandler,
+	monitoringHandler *MonitoringHandler,
+	sessionManager *auth.SessionManager,
+	cfg RouterConfig,
 ) *gin.Engine {
 	router := gin.Default()
 
@@ -50,7 +73,7 @@ func NewRouter(
 
 		// Protected endpoints (require valid session)
 		protected := v1.Group("")
-		protected.Use(intMiddleware.AuthMiddleware(sessionManager))
+		protected.Use(intMiddleware.AuthMiddlewareWithConfig(sessionManager, cfg.ProviderRepo, cfg.AuthDisabled))
 		{
 			protected.POST("/auth/logout", authHandler.Logout)
 

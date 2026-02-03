@@ -43,9 +43,16 @@ type RentalSession struct {
 	StartTime       *time.Time         `json:"startTime,omitempty"`       // Set when state becomes RUNNING
 	EndTime         *time.Time         `json:"endTime,omitempty"`         // Set when reaching terminal state
 	TxHash          *string            `json:"txHash,omitempty"`          // Blockchain transaction hash
-	BlockNumber     *uint64            `json:"blockNumber,omitempty"`     // Block where state was confirmed
-	CreatedAt       time.Time          `json:"createdAt"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
+	BlockNumber          *uint64            `json:"blockNumber,omitempty"`          // Block where state was confirmed
+	SettledAt            *time.Time         `json:"settledAt,omitempty"`            // Set when settlement processed (04-07)
+	SettledAmount        string             `json:"settledAmount,omitempty"`        // Calculated cost in Wei (04-07)
+	DeletedAt            *time.Time         `json:"deletedAt,omitempty"`            // Set when soft-deleted (TTL cleanup)
+	ExtendedUntil        *time.Time         `json:"extendedUntil,omitempty"`        // Hub-managed expiration time (16-01)
+	ExtensionCount       int                `json:"extensionCount"`                 // Number of times extended (16-01)
+	TotalExtendedMinutes int                `json:"totalExtendedMinutes"`           // Total extension duration in minutes (16-01)
+	DockerImage          string             `json:"dockerImage,omitempty"`          // Container image for GPU workload (24-01)
+	CreatedAt            time.Time          `json:"createdAt"`
+	UpdatedAt            time.Time          `json:"updatedAt"`
 }
 
 // CanTransitionTo checks if the session can transition from its current state to newState

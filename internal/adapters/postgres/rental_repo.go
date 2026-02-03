@@ -381,7 +381,8 @@ func (r *RentalSessionRepository) ListPendingWithTxHash(ctx context.Context) ([]
 	query := `
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
-			deleted_at, created_at, updated_at
+			deleted_at, extended_until, extension_count, total_extended_minutes,
+			docker_image, created_at, updated_at
 		FROM rental_sessions
 		WHERE state = 'PENDING' AND tx_hash IS NOT NULL AND deleted_at IS NULL
 		ORDER BY created_at ASC

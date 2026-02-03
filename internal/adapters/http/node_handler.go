@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/services"
 )
 
@@ -101,10 +102,19 @@ func (h *NodeHandler) UpdateNodePrice(c *gin.Context) {
 
 // ListNodes returns all nodes for the authenticated provider
 // GET /api/v1/nodes
+// In AUTH_DISABLED mode, returns all active nodes for E2E testing discovery
 func (h *NodeHandler) ListNodes(c *gin.Context) {
-	providerID := c.GetString("provider_id")
+	var nodes []*domain.Node
+	var err error
 
-	nodes, err := h.nodeService.GetProviderNodes(c.Request.Context(), providerID)
+	// In auth_disabled mode, return all active nodes for E2E testing
+	if _, authDisabled := c.Get("auth_disabled"); authDisabled {
+		nodes, err = h.nodeService.ListActiveNodes(c.Request.Context())
+	} else {
+		providerID := c.GetString("provider_id")
+		nodes, err = h.nodeService.GetProviderNodes(c.Request.Context(), providerID)
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list nodes"})
 		return

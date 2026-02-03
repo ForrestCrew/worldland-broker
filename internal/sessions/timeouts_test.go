@@ -89,6 +89,18 @@ func (m *MockStaleSessionRepo) ListPendingWithTxHash(ctx context.Context) ([]*do
 	return nil, nil
 }
 
+func (m *MockStaleSessionRepo) FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*domain.RentalSession, error) {
+	return nil, nil
+}
+
+func (m *MockStaleSessionRepo) UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error {
+	return nil
+}
+
+func (m *MockStaleSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error) {
+	return "", nil
+}
+
 // MockSessionFailer implements SessionFailer for testing
 type MockSessionFailer struct {
 	mock.Mock

@@ -18,9 +18,11 @@ import (
 
 // mockEventHandler implements EventHandler for testing
 type mockEventHandler struct {
-	startedCalls []*RentalStartedEvent
-	stoppedCalls []*RentalStoppedEvent
-	shouldFail   bool
+	startedCalls   []*RentalStartedEvent
+	stoppedCalls   []*RentalStoppedEvent
+	depositedCalls []*DepositedEvent
+	withdrawnCalls []*WithdrawnEvent
+	shouldFail     bool
 }
 
 func (m *mockEventHandler) HandleRentalStarted(ctx context.Context, event *RentalStartedEvent) error {
@@ -36,6 +38,22 @@ func (m *mockEventHandler) HandleRentalStopped(ctx context.Context, event *Renta
 		return errors.New("handler failed")
 	}
 	m.stoppedCalls = append(m.stoppedCalls, event)
+	return nil
+}
+
+func (m *mockEventHandler) HandleDeposited(ctx context.Context, event *DepositedEvent) error {
+	if m.shouldFail {
+		return errors.New("handler failed")
+	}
+	m.depositedCalls = append(m.depositedCalls, event)
+	return nil
+}
+
+func (m *mockEventHandler) HandleWithdrawn(ctx context.Context, event *WithdrawnEvent) error {
+	if m.shouldFail {
+		return errors.New("handler failed")
+	}
+	m.withdrawnCalls = append(m.withdrawnCalls, event)
 	return nil
 }
 

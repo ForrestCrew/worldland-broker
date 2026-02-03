@@ -179,6 +179,10 @@ func (m *mockNodeRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
 // generateTestCAForRouter creates a test CA for router tests
 func generateTestCAForRouter() (caCertPEM, caKeyPEM []byte, err error) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -237,8 +241,8 @@ func setupTestRouter() *gin.Engine {
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
 
-	// RentalHandler, ConfirmationHandler, BalanceHandler, HistoryHandler are nil for auth tests - those routes won't be used
-	return httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, nil, nil, nil, nil, sessionManager)
+	// RentalHandler, ConfirmationHandler, BalanceHandler, HistoryHandler, MonitoringHandler are nil for auth tests - those routes won't be used
+	return httpAdapter.NewRouter(authHandler, nodeHandler, certHandler, nil, nil, nil, nil, nil, sessionManager)
 }
 
 func TestGetNonce_ReturnsUniqueNonce(t *testing.T) {

@@ -177,6 +177,10 @@ func (m *mockNodeRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
 // mockProviderRepo is a mock implementation of ProviderRepository
 type mockProviderRepo struct {
 	providers map[string]*domain.Provider

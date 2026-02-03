@@ -142,20 +142,33 @@ type CreateSessionResponse struct {
 // CreateSession handles POST /api/v1/rentals
 // Creates a new rental session in PENDING state
 func (h *RentalHandler) CreateSession(c *gin.Context) {
-	// Get provider ID from auth context (set by auth middleware)
-	providerID, exists := c.Get("provider_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
+	var userAddress string
 
-	// Look up provider to get wallet address (userAddress)
-	provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
-		return
+	// Check if auth is disabled (E2E testing mode)
+	if _, authDisabled := c.Get("auth_disabled"); authDisabled {
+		// Use user_address directly from middleware
+		if addr, exists := c.Get("user_address"); exists {
+			userAddress = addr.(string)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user_address required in auth_disabled mode"})
+			return
+		}
+	} else {
+		// Normal auth flow: Get provider ID from auth context (set by auth middleware)
+		providerID, exists := c.Get("provider_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+
+		// Look up provider to get wallet address (userAddress)
+		provider, err := h.providerRepo.GetByID(c.Request.Context(), providerID.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+			return
+		}
+		userAddress = provider.WalletAddress
 	}
-	userAddress := provider.WalletAddress
 
 	var req CreateSessionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
