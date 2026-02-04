@@ -22,7 +22,7 @@ func AuthMiddleware(sessionManager *auth.SessionManager) gin.HandlerFunc {
 
 // AuthMiddlewareWithConfig creates auth middleware with configurable auth bypass
 // When disabled is true, still validates session but sets auth_disabled flag for handler logic
-// providerRepo is optional - only needed for auth_disabled mode to look up wallet addresses
+// providerRepo is used to look up wallet addresses from provider IDs
 func AuthMiddlewareWithConfig(sessionManager *auth.SessionManager, providerRepo domain.ProviderRepository, disabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// In auth_disabled mode, try to validate session first
@@ -47,6 +47,7 @@ func AuthMiddlewareWithConfig(sessionManager *auth.SessionManager, providerRepo 
 							provider, err := providerRepo.GetByID(c.Request.Context(), session.ProviderID)
 							if err == nil {
 								c.Set("user_address", provider.WalletAddress)
+								c.Set("wallet_address", provider.WalletAddress)
 							}
 						}
 						c.Next()
@@ -60,6 +61,7 @@ func AuthMiddlewareWithConfig(sessionManager *auth.SessionManager, providerRepo 
 			testProviderID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(testUserAddress)).String()
 			c.Set("provider_id", testProviderID)
 			c.Set("user_address", testUserAddress)
+			c.Set("wallet_address", testUserAddress)
 			c.Set("session_token", "e2e-test-token")
 			c.Next()
 			return
@@ -93,6 +95,15 @@ func AuthMiddlewareWithConfig(sessionManager *auth.SessionManager, providerRepo 
 		// Store session info in context for handlers
 		c.Set("provider_id", session.ProviderID)
 		c.Set("session_token", token)
+
+		// Look up wallet address from provider
+		if providerRepo != nil {
+			provider, err := providerRepo.GetByID(c.Request.Context(), session.ProviderID)
+			if err == nil {
+				c.Set("user_address", provider.WalletAddress)
+				c.Set("wallet_address", provider.WalletAddress)
+			}
+		}
 
 		c.Next()
 	}
