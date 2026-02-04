@@ -61,6 +61,20 @@ func main() {
 	var podWatcher *k8s.PodWatcher
 	var metricsCollector *k8s.MetricsCollector
 
+	// Initialize K8s join service (Phase 29)
+	var k8sJoinService *services.K8sJoinService
+	if cfg.K8s.JoinEnabled && cfg.K8s.MasterIP != "" {
+		k8sJoinService = services.NewK8sJoinService(&services.K8sJoinConfig{
+			MasterIP:   cfg.K8s.MasterIP,
+			MasterPort: cfg.K8s.MasterPort,
+			Enabled:    true,
+		})
+		logger.Info("K8s join service initialized",
+			"masterIP", cfg.K8s.MasterIP,
+			"masterPort", cfg.K8s.MasterPort,
+		)
+	}
+
 	if cfg.K8s.Enabled {
 		k8sManager := k8s.GetManager()
 
@@ -339,6 +353,46 @@ func main() {
 			logger.Error("Failed to auto-register node", "nodeID", nodeID, "error", err)
 		} else {
 			logger.Info("Node auto-registered successfully", "nodeID", nodeID)
+		}
+
+		// Send K8s join command if enabled (Phase 29)
+		if k8sJoinService != nil && k8sJoinService.IsEnabled() {
+			// Check if node is already in cluster or has pending join
+			if k8sJoinService.IsNodeJoined(nodeID) {
+				logger.Info("Node already joined K8s cluster", "nodeID", nodeID)
+				return
+			}
+			if k8sJoinService.IsPendingJoin(nodeID) {
+				logger.Info("Node has pending K8s join request", "nodeID", nodeID)
+				return
+			}
+
+			// Generate join token and send to node
+			joinInfo, err := k8sJoinService.GenerateJoinToken(ctx)
+			if err != nil {
+				logger.Error("Failed to generate K8s join token", "nodeID", nodeID, "error", err)
+				return
+			}
+
+			// Send join command to node
+			joinCmd := mtls.Command{
+				ID:   fmt.Sprintf("join-k8s-%s-%d", nodeID, time.Now().Unix()),
+				Type: "join_k8s",
+				Payload: map[string]interface{}{
+					"join_command": joinInfo.JoinCommand,
+					"join_token":   joinInfo.JoinToken,
+					"master_ip":    joinInfo.MasterIP,
+					"master_port":  joinInfo.MasterPort,
+					"ca_hash":      joinInfo.CAHash,
+				},
+			}
+
+			if err := mtlsServer.SendCommand(nodeID, joinCmd); err != nil {
+				logger.Error("Failed to send K8s join command", "nodeID", nodeID, "error", err)
+			} else {
+				k8sJoinService.RequestJoin(nodeID)
+				logger.Info("K8s join command sent to node", "nodeID", nodeID)
+			}
 		}
 	}
 

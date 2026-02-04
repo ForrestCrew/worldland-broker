@@ -27,6 +27,11 @@ type K8sConfig struct {
 	Enabled        bool   // Enable K8s integration
 	KubeconfigPath string // Path to kubeconfig (empty for in-cluster)
 	DefaultImage   string // Default GPU container image
+
+	// K8s Join settings (Phase 29) - for nodes joining the cluster
+	JoinEnabled bool   // Enable automatic K8s join for new nodes
+	MasterIP    string // K8s master API server IP
+	MasterPort  int    // K8s master API server port (default 6443)
 }
 
 // Config holds application configuration
@@ -117,6 +122,11 @@ func LoadConfig() *Config {
 	k8sEnabled := os.Getenv("K8S_ENABLED")
 	k8sEnabledBool := k8sEnabled == "true" || k8sEnabled == "1"
 
+	// K8s Join configuration (Phase 29)
+	k8sJoinEnabled := os.Getenv("K8S_JOIN_ENABLED")
+	k8sJoinEnabledBool := k8sJoinEnabled == "true" || k8sJoinEnabled == "1"
+	k8sMasterPort, _ := strconv.Atoi(getEnv("K8S_MASTER_PORT", "6443"))
+
 	return &Config{
 		DBHost:     dbHost,
 		DBPort:     dbPort,
@@ -154,6 +164,9 @@ func LoadConfig() *Config {
 			Enabled:        k8sEnabledBool,
 			KubeconfigPath: os.Getenv("KUBECONFIG"),
 			DefaultImage:   getEnv("K8S_DEFAULT_IMAGE", "ubuntu:22.04"),
+			JoinEnabled:    k8sJoinEnabledBool,
+			MasterIP:       os.Getenv("K8S_MASTER_IP"),
+			MasterPort:     k8sMasterPort,
 		},
 	}
 }
