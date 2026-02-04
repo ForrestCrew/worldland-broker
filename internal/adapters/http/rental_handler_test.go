@@ -199,6 +199,19 @@ func (m *rentalMockNodeRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *rentalMockNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
+func (m *rentalMockNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	for _, node := range m.nodes {
+		if node.GPUUUID == gpuUUID {
+			return node, nil
+		}
+	}
+	return nil, errors.New("node not found")
+}
+
 type rentalMockProviderRepo struct {
 	providers map[string]*domain.Provider
 }

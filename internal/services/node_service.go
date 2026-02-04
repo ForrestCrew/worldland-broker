@@ -49,6 +49,7 @@ type RegisterNodeInput struct {
 }
 
 // RegisterNode creates a new node registration for a provider
+// If a node with the same GPU UUID already exists, it reactivates the existing node
 func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput) (*domain.Node, error) {
 	// Validate GPU specs (basic fraud prevention per research)
 	maxMem, known := knownGPUMaxMemory[input.GPUType]
@@ -69,6 +70,23 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 	}
 	if price <= 0 {
 		return nil, fmt.Errorf("price must be positive")
+	}
+
+	// Check for existing node with same GPU UUID (duplicate prevention)
+	existingNode, err := s.nodeRepo.GetByGPUUUID(ctx, input.GPUUUID)
+	if err == nil && existingNode != nil {
+		// Node already exists - reactivate it with updated info
+		existingNode.ProviderID = input.ProviderID
+		existingNode.GPUType = input.GPUType
+		existingNode.MemoryGB = input.MemoryGB
+		existingNode.PricePerSecond = input.PricePerSec
+		existingNode.Status = domain.NodeStatusPending
+		existingNode.UpdatedAt = time.Now()
+
+		if err := s.nodeRepo.Update(ctx, existingNode); err != nil {
+			return nil, fmt.Errorf("failed to reactivate existing node: %w", err)
+		}
+		return existingNode, nil
 	}
 
 	// Ensure provider exists (auto-create for E2E testing if providerRepo available)

@@ -174,6 +174,10 @@ func (m *mockConfirmationNodeRepo) ListActive(ctx context.Context) ([]*domain.No
 	return nil, nil
 }
 
+func (m *mockConfirmationNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	return nil, nil
+}
+
 type mockConfirmationProviderRepo struct {
 	providers map[string]*domain.Provider
 }

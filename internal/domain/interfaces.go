@@ -17,6 +17,7 @@ type ProviderRepository interface {
 type NodeRepository interface {
 	Create(ctx context.Context, node *Node) error
 	GetByID(ctx context.Context, id string) (*Node, error)
+	GetByGPUUUID(ctx context.Context, gpuUUID string) (*Node, error) // For duplicate prevention
 	GetByProvider(ctx context.Context, providerID string) ([]*Node, error)
 	ListActive(ctx context.Context) ([]*Node, error) // For discovery endpoints (Phase 27)
 	Update(ctx context.Context, node *Node) error

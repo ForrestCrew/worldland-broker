@@ -86,6 +86,39 @@ func (r *PostgresNodeRepository) GetByID(ctx context.Context, id string) (*domai
 	return &node, nil
 }
 
+// GetByGPUUUID retrieves a node by GPU UUID (for duplicate prevention)
+func (r *PostgresNodeRepository) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at
+		FROM nodes
+		WHERE gpu_uuid = $1
+	`
+
+	var node domain.Node
+	err := r.pool.QueryRow(ctx, query, gpuUUID).Scan(
+		&node.ID,
+		&node.ProviderID,
+		&node.GPUUUID,
+		&node.GPUType,
+		&node.MemoryGB,
+		&node.PricePerSecond,
+		&node.APIEndpoint,
+		&node.Status,
+		&node.CertificateExpiry,
+		&node.CreatedAt,
+		&node.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node by GPU UUID: %w", err)
+	}
+
+	return &node, nil
+}
+
 // GetByProvider retrieves all nodes for a provider
 func (r *PostgresNodeRepository) GetByProvider(ctx context.Context, providerID string) ([]*domain.Node, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

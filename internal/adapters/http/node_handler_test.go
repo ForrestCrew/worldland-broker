@@ -69,6 +69,15 @@ func (m *mockNodeRepo2) ListActive(ctx context.Context) ([]*domain.Node, error) 
 	return nil, nil
 }
 
+func (m *mockNodeRepo2) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	for _, node := range m.nodes {
+		if node.GPUUUID == gpuUUID {
+			return node, nil
+		}
+	}
+	return nil, errors.New("node not found")
+}
+
 type mockSessionRepo2 struct {
 	sessions    map[string]*domain.Session
 	validTokens map[string]string // token -> providerID

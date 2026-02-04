@@ -183,6 +183,15 @@ func (m *mockNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
 	return nil, nil
 }
 
+func (m *mockNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	for _, node := range m.nodes {
+		if node.GPUUUID == gpuUUID {
+			return node, nil
+		}
+	}
+	return nil, errors.New("node not found")
+}
+
 // generateTestCAForRouter creates a test CA for router tests
 func generateTestCAForRouter() (caCertPEM, caKeyPEM []byte, err error) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

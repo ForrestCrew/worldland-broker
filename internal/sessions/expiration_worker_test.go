@@ -200,6 +200,14 @@ func (s *SimpleNodeRepo) FindAvailableNodes(ctx context.Context) ([]*domain.Node
 	return nil, nil
 }
 
+func (s *SimpleNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
+	return nil, nil
+}
+
+func (s *SimpleNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
+	return nil, nil
+}
+
 // SimpleProviderRepo - minimal provider repo
 type SimpleProviderRepo struct{}
 
