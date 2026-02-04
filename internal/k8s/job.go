@@ -17,8 +17,9 @@ import (
 
 // JobManager manages GPU session Pod lifecycle
 type JobManager struct {
-	clientset kubernetes.Interface
-	logger    *slog.Logger
+	clientset    kubernetes.Interface
+	logger       *slog.Logger
+	externalHost string // External host/IP for SSH access (overrides node IP if set)
 }
 
 // NewJobManager creates a new JobManager
@@ -27,6 +28,12 @@ func NewJobManager(clientset kubernetes.Interface, logger *slog.Logger) *JobMana
 		clientset: clientset,
 		logger:    logger,
 	}
+}
+
+// WithExternalHost sets the external host for SSH connections
+func (m *JobManager) WithExternalHost(host string) *JobManager {
+	m.externalHost = host
+	return m
 }
 
 // CreateGPUSession creates a GPU Pod with SSH password injection
@@ -72,6 +79,16 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (pas
 			Containers: []corev1.Container{{
 				Name:  "gpu-workload",
 				Image: spec.Image,
+				Command: []string{"/bin/bash", "-c"},
+				Args: []string{`
+apt-get update && apt-get install -y openssh-server && \
+mkdir -p /var/run/sshd && \
+useradd -m -s /bin/bash user && \
+echo "user:$SSH_PASSWORD" | chpasswd && \
+sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && \
+sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+/usr/sbin/sshd -D
+`},
 				Env: []corev1.EnvVar{{
 					Name: "SSH_PASSWORD",
 					ValueFrom: &corev1.EnvVarSource{
@@ -162,7 +179,7 @@ func (m *JobManager) createSSHService(ctx context.Context, namespace, sessionID 
 				Port:       22,
 				TargetPort: intstr.FromInt(22),
 			}},
-			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyTypeLocal,
+			ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyTypeCluster,
 		},
 	}
 
@@ -296,25 +313,32 @@ func (m *JobManager) GetSSHConnectionInfo(ctx context.Context, userAddress, sess
 		return nil, fmt.Errorf("pod not ready yet")
 	}
 
-	// Get Node to find IP address
-	node, err := m.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-
+	// Determine host IP for SSH connection
 	var nodeIP string
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeExternalIP {
-			nodeIP = addr.Address
-			break
-		}
-		if addr.Type == corev1.NodeInternalIP && nodeIP == "" {
-			nodeIP = addr.Address
-		}
-	}
 
-	if nodeIP == "" {
-		return nil, fmt.Errorf("node IP not found")
+	// Use external host override if configured (for cloud environments without K8s ExternalIP)
+	if m.externalHost != "" {
+		nodeIP = m.externalHost
+	} else {
+		// Get Node to find IP address
+		node, err := m.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get node: %w", err)
+		}
+
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeExternalIP {
+				nodeIP = addr.Address
+				break
+			}
+			if addr.Type == corev1.NodeInternalIP && nodeIP == "" {
+				nodeIP = addr.Address
+			}
+		}
+
+		if nodeIP == "" {
+			return nil, fmt.Errorf("node IP not found")
+		}
 	}
 
 	// Retrieve SSH password from K8s Secret

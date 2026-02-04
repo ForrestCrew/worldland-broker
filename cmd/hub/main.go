@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -93,7 +94,7 @@ func main() {
 			clientset, _ := k8sManager.GetClientset()
 
 			// Create K8s components
-			jobManager = k8s.NewJobManager(clientset, logger)
+			jobManager = k8s.NewJobManager(clientset, logger).WithExternalHost(cfg.K8s.ExternalHost)
 			tenantOrch = k8s.NewTenantOrchestrator(clientset, logger)
 
 			// Create MetricsCollector (Phase 23) using same rest.Config
@@ -176,7 +177,7 @@ func main() {
 	// Initialize blockchain components
 	// Hub uses 'rental_events' checkpoint; standalone indexer uses 'indexer_events'
 	checkpointStore := blockchain.NewCheckpointStore(dbPool, "rental_events")
-	eventProcessor := blockchain.NewEventProcessor(rentalSessionManager, rentalSessionRepo, logger)
+	eventProcessor := blockchain.NewEventProcessor(rentalSessionManager, rentalSessionRepo, logger).WithK8s(jobManager)
 
 	// Initialize event listener (if enabled and contract address configured)
 	var eventListener *blockchain.EventListener
@@ -264,11 +265,23 @@ func main() {
 		logger.Warn("Balance validator and transaction verifier disabled (no contract address or HTTP RPC endpoint configured)")
 	}
 
+	// Initialize image repository for preset images
+	imageRepo := postgres.NewImageRepository(dbPool)
+
 	// Initialize HTTP handlers
 	authHandler := httpAdapter.NewAuthHandler(siweVerifier, sessionManager, nonceRepo, providerRepo)
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
 	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient, balanceValidator)
+
+	// Wire image repository to rental handler and session manager
+	rentalHandler = rentalHandler.WithImageRepository(imageRepo)
+	rentalSessionManager = rentalSessionManager.WithImageRepository(imageRepo)
+
+	// Wire K8s integration to rental handler if enabled
+	if jobManager != nil {
+		rentalHandler = rentalHandler.WithK8s(jobManager)
+	}
 
 	// Initialize confirmation handler (14-03 ADR-001)
 	confirmationHandler := httpAdapter.NewConfirmationHandler(rentalSessionRepo, providerRepo)
@@ -336,7 +349,40 @@ func main() {
 			return
 		}
 		logger.Info("Received CommandAck", "nodeID", nodeID, "commandID", ack.CommandID, "status", ack.Status)
-		// TODO: Update command status in database (Phase 4)
+
+		// Handle K8s join acknowledgment - label the K8s node automatically
+		if strings.HasPrefix(ack.CommandID, "join-k8s-") && ack.Status == "ok" {
+			if ack.Payload != nil {
+				if hostname, ok := ack.Payload["hostname"].(string); ok && hostname != "" {
+					// nodeID from mTLS cert is the wallet address (e.g., 0x70997970...)
+					// We need to look up the provider by wallet to get the UUID provider_id
+					provider, err := providerRepo.GetByWallet(ctx, nodeID)
+					if err != nil {
+						logger.Error("Failed to get provider by wallet for K8s labeling", "wallet", nodeID, "error", err)
+						return
+					}
+
+					// Get nodes for this provider using the UUID provider_id
+					nodes, err := nodeRepo.GetByProvider(ctx, provider.ID)
+					if err != nil || len(nodes) == 0 {
+						logger.Warn("No nodes found for K8s labeling", "providerID", provider.ID, "wallet", nodeID)
+						return
+					}
+
+					// Use the first node's info for labeling
+					node := nodes[0]
+
+					// Label the K8s node with provider-id and gpu-model
+					if k8sJoinService != nil && k8sJoinService.IsEnabled() {
+						if err := k8sJoinService.LabelNodeForRental(ctx, hostname, node.ProviderID, node.GPUType); err != nil {
+							logger.Error("Failed to label K8s node", "hostname", hostname, "providerID", node.ProviderID, "error", err)
+						} else {
+							logger.Info("K8s node labeled successfully", "hostname", hostname, "providerID", node.ProviderID, "gpuModel", node.GPUType)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Wire auto-registration handler - register node when it connects via mTLS (Phase 27)

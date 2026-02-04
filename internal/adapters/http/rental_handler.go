@@ -1,10 +1,13 @@
 package http
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/sessions"
@@ -27,6 +31,7 @@ type RentalHandler struct {
 	nodeClient       rental.NodeClientInterface
 	balanceValidator blockchain.BalanceValidatorInterface
 	imageRepo        domain.ImageRepository // Optional, for preset image listing (24-03)
+	jobManager       *k8s.JobManager        // Optional, for K8s-based SSH info retrieval
 }
 
 // NewRentalHandler creates a new rental handler
@@ -56,6 +61,12 @@ func (h *RentalHandler) WithImageRepository(repo domain.ImageRepository) *Rental
 	return h
 }
 
+// WithK8s sets the JobManager for K8s-based SSH info retrieval
+func (h *RentalHandler) WithK8s(jobManager *k8s.JobManager) *RentalHandler {
+	h.jobManager = jobManager
+	return h
+}
+
 // FindProvidersRequest represents a provider search request
 type FindProvidersRequest struct {
 	GPUType           string `json:"gpuType"`
@@ -75,11 +86,14 @@ type FindProvidersResponse struct {
 
 // ProviderInfo represents a provider node in API response
 type ProviderInfo struct {
-	NodeID         string `json:"nodeId"`
-	ProviderID     string `json:"providerId"`
-	GPUType        string `json:"gpuType"`
-	MemoryGB       int    `json:"memoryGb"`
-	PricePerSecond string `json:"pricePerSecond"`
+	NodeID          string `json:"nodeId"`
+	ProviderID      string `json:"providerId"`
+	ProviderAddress string `json:"providerAddress"` // Wallet address for smart contract
+	GPUType         string `json:"gpuType"`
+	VramGB          int    `json:"vramGb"`
+	PricePerSecond  string `json:"pricePerSecond"`
+	Region          string `json:"region"`
+	Status          string `json:"status"`
 }
 
 // FindProviders handles POST /api/v1/rentals/providers
@@ -115,11 +129,11 @@ func (h *RentalHandler) FindProviders(c *gin.Context) {
 	}
 
 	resp := FindProvidersResponse{
-		Providers:  convertNodes(result.Nodes),
+		Providers:  h.convertNodes(c.Request.Context(), result.Nodes),
 		TotalCount: result.TotalCount,
 	}
 	if len(result.Recommendations) > 0 {
-		resp.Recommendations = convertNodes(result.Recommendations)
+		resp.Recommendations = h.convertNodes(c.Request.Context(), result.Recommendations)
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -274,10 +288,20 @@ type SessionInfo struct {
 	StartTime       *string `json:"startTime,omitempty"`
 	EndTime         *string `json:"endTime,omitempty"`
 	CreatedAt       string  `json:"createdAt"`
+	// Settlement info (for STOPPED sessions)
+	SettlementAmount string `json:"settlementAmount,omitempty"`
+	// Node info
+	GPUType  string `json:"gpuType,omitempty"`
+	MemoryGB int    `json:"memoryGb,omitempty"`
+	// SSH connection info (for RUNNING sessions)
+	SSHHost     string `json:"sshHost,omitempty"`
+	SSHPort     int    `json:"sshPort,omitempty"`
+	SSHUser     string `json:"sshUser,omitempty"`
+	SSHPassword string `json:"sshPassword,omitempty"`
 }
 
 // ListSessions handles GET /api/v1/rentals
-// Returns user's rental sessions
+// Returns user's rental sessions with node info and SSH connection details
 func (h *RentalHandler) ListSessions(c *gin.Context) {
 	// Get provider ID from auth context
 	providerID, exists := c.Get("provider_id")
@@ -305,8 +329,11 @@ func (h *RentalHandler) ListSessions(c *gin.Context) {
 		return
 	}
 
+	// Convert sessions with node info and SSH details
+	sessionInfos := h.convertSessionsWithDetails(c.Request.Context(), sessions, userAddress)
+
 	c.JSON(http.StatusOK, ListSessionsResponse{
-		Sessions:   convertSessions(sessions),
+		Sessions:   sessionInfos,
 		TotalCount: len(sessions), // TODO: Add proper count query
 	})
 }
@@ -363,16 +390,17 @@ type StartRentalRequest struct {
 
 // StartRentalResponse represents the response with connection info
 type StartRentalResponse struct {
-	SessionID  string `json:"sessionId"`
-	SSHHost    string `json:"sshHost"`
-	SSHPort    int    `json:"sshPort"`
-	SSHUser    string `json:"sshUser"`
-	SSHCommand string `json:"sshCommand"`
-	Message    string `json:"message"`
+	SessionID   string `json:"sessionId"`
+	SSHHost     string `json:"sshHost"`
+	SSHPort     int    `json:"sshPort"`
+	SSHUser     string `json:"sshUser"`
+	SSHPassword string `json:"sshPassword"`
+	SSHCommand  string `json:"sshCommand"`
+	Message     string `json:"message"`
 }
 
 // HandleStartRental handles POST /api/v1/rentals/:id/start
-// Calls Node to start the GPU container and returns SSH connection info
+// Returns SSH connection info for the running container
 func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 	sessionID := c.Param("id")
 
@@ -401,19 +429,46 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 		return
 	}
 
-	if session.State != domain.RentalStatePending {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session not in PENDING state"})
+	// Session must be RUNNING (Pod provisioned by ConfirmationWorker)
+	if session.State != domain.RentalStateRunning {
+		if session.State == domain.RentalStatePending {
+			c.JSON(http.StatusAccepted, gin.H{
+				"error":   "session still pending",
+				"message": "Pod is being provisioned. Please wait and retry.",
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("session in %s state, expected RUNNING", session.State)})
 		return
 	}
 
-	// Parse request for SSH key
-	var req StartRentalRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "sshPublicKey required"})
+	// K8s-based SSH info retrieval (primary path)
+	if h.jobManager != nil {
+		sshInfo, err := h.jobManager.GetSSHConnectionInfo(c.Request.Context(), session.UserAddress, sessionID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "pod not ready",
+				"message": "Container is starting. Please retry in a few seconds.",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		sshCommand := fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
+
+		c.JSON(http.StatusOK, StartRentalResponse{
+			SessionID:   sessionID,
+			SSHHost:     sshInfo.Host,
+			SSHPort:     int(sshInfo.Port),
+			SSHUser:     "user",
+			SSHPassword: sshInfo.Password,
+			SSHCommand:  sshCommand,
+			Message:     "Container ready",
+		})
 		return
 	}
 
-	// Lookup Node to get URL and GPU info
+	// Legacy Node API path (fallback when K8s is not enabled)
 	node, err := h.nodeRepo.GetByID(c.Request.Context(), session.NodeID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "node not found"})
@@ -421,7 +476,14 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 	}
 
 	if node.APIEndpoint == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "node API endpoint not configured"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "node API endpoint not configured and K8s not enabled"})
+		return
+	}
+
+	// Parse request for SSH key (legacy path)
+	var req StartRentalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sshPublicKey required"})
 		return
 	}
 
@@ -430,9 +492,9 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 		SessionID:    sessionID,
 		GPUDeviceID:  node.GPUUUID,
 		SSHPublicKey: req.SSHPublicKey,
-		Image:        "nvidia/cuda:12.1-runtime-ubuntu22.04", // Default image
-		MemoryBytes:  8 * 1024 * 1024 * 1024,                 // 8GB default
-		CPUCount:     4,                                      // 4 CPUs default
+		Image:        "nvidia/cuda:12.1.1-runtime-ubuntu22.04",
+		MemoryBytes:  8 * 1024 * 1024 * 1024,
+		CPUCount:     4,
 	}
 
 	nodeResp, err := h.nodeClient.StartRental(c.Request.Context(), node.APIEndpoint, nodeReq)
@@ -445,14 +507,14 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 		return
 	}
 
-	// Return connection info to user
 	c.JSON(http.StatusOK, StartRentalResponse{
-		SessionID:  sessionID,
-		SSHHost:    nodeResp.SSHHost,
-		SSHPort:    nodeResp.SSHPort,
-		SSHUser:    nodeResp.SSHUser,
-		SSHCommand: nodeResp.SSHCommand,
-		Message:    "Rental started. SSH into the container using the provided command.",
+		SessionID:   sessionID,
+		SSHHost:     nodeResp.SSHHost,
+		SSHPort:     nodeResp.SSHPort,
+		SSHUser:     nodeResp.SSHUser,
+		SSHPassword: "", // Legacy Node API doesn't provide password
+		SSHCommand:  nodeResp.SSHCommand,
+		Message:     "Rental started. SSH into the container using the provided command.",
 	})
 }
 
@@ -536,22 +598,42 @@ func (h *RentalHandler) HandleStopRental(c *gin.Context) {
 	})
 }
 
-// Helper functions for conversion
-func convertNodes(nodes []*domain.Node) []*ProviderInfo {
+// convertNodes converts domain.Node to ProviderInfo with provider wallet address lookup
+func (h *RentalHandler) convertNodes(ctx context.Context, nodes []*domain.Node) []*ProviderInfo {
 	if nodes == nil {
 		return []*ProviderInfo{}
 	}
 	result := make([]*ProviderInfo, len(nodes))
 	for i, n := range nodes {
-		result[i] = &ProviderInfo{
+		info := &ProviderInfo{
 			NodeID:         n.ID,
 			ProviderID:     n.ProviderID,
 			GPUType:        n.GPUType,
-			MemoryGB:       n.MemoryGB,
-			PricePerSecond: n.PricePerSecond,
+			VramGB:         n.MemoryGB,
+			PricePerSecond: cleanPriceString(n.PricePerSecond),
+			Region:         "asia", // Default region for now
+			Status:         "available",
 		}
+
+		// Lookup provider to get wallet address
+		if h.providerRepo != nil && n.ProviderID != "" {
+			provider, err := h.providerRepo.GetByID(ctx, n.ProviderID)
+			if err == nil && provider != nil {
+				info.ProviderAddress = provider.WalletAddress
+			}
+		}
+
+		result[i] = info
 	}
 	return result
+}
+
+// cleanPriceString removes decimal points from price strings for BigInt compatibility
+func cleanPriceString(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
 }
 
 // ImageInfo represents a base image in API response (24-03)
@@ -739,6 +821,63 @@ func (h *RentalHandler) HandleExtendSession(c *gin.Context) {
 		ExtensionCount:   result.ExtensionCount,
 		Message:          "Session extended successfully",
 	})
+}
+
+// convertSessionsWithDetails converts sessions with node info and SSH details
+func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions []*domain.RentalSession, userAddress string) []*SessionInfo {
+	if sessions == nil {
+		return []*SessionInfo{}
+	}
+	result := make([]*SessionInfo, len(sessions))
+	for i, s := range sessions {
+		info := &SessionInfo{
+			ID:              s.ID,
+			NodeID:          s.NodeID,
+			ProviderAddress: s.ProviderAddress,
+			State:           string(s.State),
+			PricePerSecond:  cleanPriceString(s.PricePerSecond),
+			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
+		}
+		if s.RentalID != nil {
+			info.RentalID = s.RentalID
+		}
+		if s.StartTime != nil {
+			t := s.StartTime.Format(time.RFC3339)
+			info.StartTime = &t
+		}
+		if s.EndTime != nil {
+			t := s.EndTime.Format(time.RFC3339)
+			info.EndTime = &t
+		}
+
+		// Include settlement amount for completed sessions
+		if s.SettledAmount != "" {
+			info.SettlementAmount = cleanPriceString(s.SettledAmount)
+		}
+
+		// Lookup node info (GPUType, MemoryGB)
+		if h.nodeRepo != nil && s.NodeID != "" {
+			node, err := h.nodeRepo.GetByID(ctx, s.NodeID)
+			if err == nil && node != nil {
+				info.GPUType = node.GPUType
+				info.MemoryGB = node.MemoryGB
+			}
+		}
+
+		// Get SSH connection info for RUNNING sessions
+		if s.State == domain.RentalStateRunning && h.jobManager != nil {
+			sshInfo, err := h.jobManager.GetSSHConnectionInfo(ctx, userAddress, s.ID)
+			if err == nil && sshInfo != nil {
+				info.SSHHost = sshInfo.Host
+				info.SSHPort = int(sshInfo.Port)
+				info.SSHUser = "user"
+				info.SSHPassword = sshInfo.Password
+			}
+		}
+
+		result[i] = info
+	}
+	return result
 }
 
 func convertSessions(sessions []*domain.RentalSession) []*SessionInfo {

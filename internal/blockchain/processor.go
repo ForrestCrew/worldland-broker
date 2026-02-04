@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/k8s"
 )
 
 // SessionTransitioner defines the interface for session state transitions.
@@ -24,6 +25,7 @@ type SessionTransitioner interface {
 type EventProcessor struct {
 	sessionManager SessionTransitioner
 	sessionRepo    domain.RentalSessionRepository
+	jobManager     *k8s.JobManager // K8s job manager for Pod cleanup (can be nil)
 	logger         *slog.Logger
 }
 
@@ -43,50 +45,28 @@ func NewEventProcessor(
 	}
 }
 
+// WithK8s sets the K8s JobManager for Pod cleanup on rental stop
+func (p *EventProcessor) WithK8s(jobManager *k8s.JobManager) *EventProcessor {
+	p.jobManager = jobManager
+	return p
+}
+
 // HandleRentalStarted processes RentalStarted events from the blockchain.
-// It finds the matching PENDING session by user+provider addresses and
-// transitions it to RUNNING state with the blockchain data.
+// It logs the event for debugging purposes. The actual state transition to RUNNING
+// is handled by ConfirmationWorker, which also creates the K8s Pod.
 //
-// If no matching session is found, the event is logged and skipped gracefully.
-// This can happen if the rental was created outside the Hub.
+// NOTE: We intentionally do NOT transition to RUNNING here because:
+// 1. ConfirmationWorker needs to create the K8s Pod before transitioning
+// 2. EventProcessor receiving events faster than ConfirmationWorker would cause
+//    sessions to be RUNNING without a Pod, leading to timeout failures
 func (p *EventProcessor) HandleRentalStarted(ctx context.Context, event *RentalStartedEvent) error {
-	p.logger.Info("processing RentalStarted",
+	p.logger.Info("received RentalStarted event (ConfirmationWorker will handle transition)",
 		"rentalId", event.RentalID,
 		"user", event.User.Hex(),
 		"provider", event.Provider.Hex(),
 		"block", event.BlockNumber,
 	)
-
-	// Find session by user + provider in PENDING state
-	// Note: We match by addresses since rental_id isn't set until this event
-	session, err := p.findPendingSession(ctx, event.User.Hex(), event.Provider.Hex())
-	if err != nil {
-		p.logger.Warn("no pending session found for RentalStarted",
-			"user", event.User.Hex(),
-			"provider", event.Provider.Hex(),
-			"error", err,
-		)
-		return nil // Don't error - event may be for a session created outside Hub
-	}
-
-	// Transition to RUNNING with blockchain data
-	startTime := time.Unix(int64(event.StartTime), 0)
-	err = p.sessionManager.TransitionToRunning(
-		ctx,
-		session.ID,
-		event.RentalID,
-		event.BlockNumber,
-		event.TxHash.Hex(),
-		startTime,
-	)
-	if err != nil {
-		return fmt.Errorf("transition to running: %w", err)
-	}
-
-	p.logger.Info("session transitioned to RUNNING",
-		"sessionId", session.ID,
-		"rentalId", event.RentalID,
-	)
+	// ConfirmationWorker will verify txHash, create K8s Pod, and transition to RUNNING
 	return nil
 }
 
@@ -133,6 +113,22 @@ func (p *EventProcessor) HandleRentalStopped(ctx context.Context, event *RentalS
 		"rentalId", event.RentalID,
 		"cost", event.Cost.String(),
 	)
+
+	// Delete K8s Pod (idempotent - ok if already deleted)
+	if p.jobManager != nil {
+		if err := p.jobManager.DeleteGPUSession(ctx, session.UserAddress, session.ID); err != nil {
+			p.logger.Warn("failed to delete K8s pod on rental stop",
+				"sessionId", session.ID,
+				"error", err,
+			)
+			// Don't return error - session is already STOPPED, pod cleanup is best-effort
+		} else {
+			p.logger.Info("deleted K8s pod on rental stop",
+				"sessionId", session.ID,
+			)
+		}
+	}
+
 	return nil
 }
 

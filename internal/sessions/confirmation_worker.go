@@ -214,7 +214,7 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 	session *domain.RentalSession,
 	result blockchain.VerificationResult,
 ) {
-	// Lookup node for API endpoint
+	// Lookup node for provider info
 	node, err := w.nodeRepo.GetByID(ctx, session.NodeID)
 	if err != nil {
 		w.logger.Error("failed to lookup node",
@@ -228,36 +228,31 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 		return
 	}
 
-	if node.APIEndpoint == "" {
-		w.logger.Error("node has no API endpoint",
-			"sessionId", session.ID,
-			"nodeId", session.NodeID,
-		)
-		if err := w.manager.TransitionToFailed(ctx, session.ID, "node API endpoint not configured"); err != nil {
-			w.logger.Error("failed to transition to FAILED", "error", err)
-		}
-		return
-	}
-
 	// Determine container image (24-03: use session.DockerImage with fallback to default)
 	containerImage := session.DockerImage
 	if containerImage == "" {
 		containerImage = w.defaultImage
 	}
 
-	// NEW: Create K8s Pod (in addition to existing Node API call)
+	// K8s-based provisioning (primary path when K8s is enabled)
 	if w.jobManager != nil {
 		// Ensure tenant namespace exists
 		if w.tenantOrch != nil {
 			_, err := w.tenantOrch.EnsureTenant(ctx, session.UserAddress, 1)
 			if err != nil {
 				w.logger.Error("failed to ensure tenant namespace", "error", err)
-				// Continue - Pod creation might still work if namespace exists
+				if err := w.manager.TransitionToFailed(ctx, session.ID, "failed to create tenant namespace: "+err.Error()); err != nil {
+					w.logger.Error("failed to transition to FAILED", "error", err)
+				}
+				return
 			}
 		}
 
-		// Determine GPU count (default to 1)
+		// Determine GPU count (default to 1 for GPU nodes, 0 for CPU nodes)
 		gpuCount := 1
+		if node.GPUType == "CPU Node" {
+			gpuCount = 0
+		}
 
 		spec := k8s.GPUJobSpec{
 			SessionID:     session.ID,
@@ -265,29 +260,64 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 			ProviderID:    node.ProviderID,
 			GPUCount:      gpuCount,
 			GPUModel:      node.GPUType,
-			Image:         containerImage, // 24-03: Use session.DockerImage
-			CPURequest:    "4",
-			MemoryRequest: "16Gi",
-			CPULimit:      "8",
-			MemoryLimit:   "32Gi",
+			Image:         containerImage,
+			CPURequest:    "2",
+			MemoryRequest: "4Gi",
+			CPULimit:      "4",
+			MemoryLimit:   "8Gi",
 			ExpiresAt:     time.Now().Add(24 * time.Hour),
 		}
 
 		password, err := w.jobManager.CreateGPUSession(ctx, spec)
 		if err != nil {
 			w.logger.Error("failed to create K8s pod", "sessionId", session.ID, "image", containerImage, "error", err)
-			// Non-fatal: Node API is primary for now
-		} else {
-			w.logger.Info("created K8s pod for session",
-				"sessionId", session.ID,
-				"image", containerImage,
-				"password", "[REDACTED]",
-			)
-
-			// TODO: Store SSH password in session for later API retrieval
-			// Note: Check if session repo has UpdateSSHPassword method, if not, skip
-			_ = password // password available for future use
+			if err := w.manager.TransitionToFailed(ctx, session.ID, "failed to create K8s pod: "+err.Error()); err != nil {
+				w.logger.Error("failed to transition to FAILED", "error", err)
+			}
+			return
 		}
+
+		w.logger.Info("created K8s pod for session",
+			"sessionId", session.ID,
+			"image", containerImage,
+		)
+
+		// SSH password is stored in K8s Secret and retrieved via GetSSHConnectionInfo
+		_ = password
+
+		// Transition to RUNNING with blockchain data (K8s path)
+		if err := w.manager.TransitionToRunning(
+			ctx,
+			session.ID,
+			result.RentalID,
+			result.BlockNumber,
+			*session.TxHash,
+			result.StartTime,
+		); err != nil {
+			w.logger.Error("failed to transition to RUNNING",
+				"sessionId", session.ID,
+				"error", err,
+			)
+			return
+		}
+
+		w.logger.Info("session transitioned to RUNNING (K8s)",
+			"sessionId", session.ID,
+			"rentalId", result.RentalID,
+		)
+		return
+	}
+
+	// Legacy Node API path (when K8s is not enabled)
+	if node.APIEndpoint == "" {
+		w.logger.Error("node has no API endpoint and K8s not enabled",
+			"sessionId", session.ID,
+			"nodeId", session.NodeID,
+		)
+		if err := w.manager.TransitionToFailed(ctx, session.ID, "node API endpoint not configured"); err != nil {
+			w.logger.Error("failed to transition to FAILED", "error", err)
+		}
+		return
 	}
 
 	// Call node to start the rental container

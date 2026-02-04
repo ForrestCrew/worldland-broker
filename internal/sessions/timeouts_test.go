@@ -137,7 +137,7 @@ func testLogger() *slog.Logger {
 func TestTimeoutEnforcer_Constants(t *testing.T) {
 	// Verify timeout constants match Phase 14 CONTEXT.md requirements
 	assert.Equal(t, 10*time.Minute, PendingTimeout, "PendingTimeout should be 10 minutes per Phase 14")
-	assert.Equal(t, 30*time.Second, RunningTimeout, "RunningTimeout should be 30 seconds per CONTEXT.md")
+	assert.Equal(t, 3*time.Minute, RunningTimeout, "RunningTimeout should be 3 minutes to allow large image pulls")
 	assert.Equal(t, 1*time.Minute, DefaultCheckInterval, "DefaultCheckInterval should be 1 minute per Phase 14")
 }
 

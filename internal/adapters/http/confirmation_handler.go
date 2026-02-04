@@ -294,9 +294,9 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 		} else {
 			resp.SSHHost = sshInfo.Host
 			resp.SSHPort = int(sshInfo.Port)
-			resp.SSHUser = "root"
+			resp.SSHUser = "user"
 			resp.SSHPassword = sshInfo.Password
-			resp.SSHCommand = fmt.Sprintf("ssh root@%s -p %d", sshInfo.Host, sshInfo.Port)
+			resp.SSHCommand = fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
 		}
 	}
 

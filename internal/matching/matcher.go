@@ -61,11 +61,16 @@ func (m *ProviderMatcher) FindProviders(ctx context.Context, req MatchRequest) (
 		return nil, err
 	}
 
-	// Filter by GPU type (exact match)
+	// Filter by GPU type (exact match) - skip if empty
 	var matched []*domain.Node
-	for _, node := range nodes {
-		if node.GPUType == req.GPUType {
-			matched = append(matched, node)
+	if req.GPUType == "" {
+		// No GPU type filter - return all active nodes
+		matched = nodes
+	} else {
+		for _, node := range nodes {
+			if node.GPUType == req.GPUType {
+				matched = append(matched, node)
+			}
 		}
 	}
 

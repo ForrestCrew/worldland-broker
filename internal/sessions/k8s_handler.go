@@ -40,12 +40,19 @@ func (h *K8sStateHandler) OnPodRunning(ctx context.Context, sessionID string) er
 		return fmt.Errorf("failed to load session: %w", err)
 	}
 
-	// Check if already RUNNING (idempotent)
+	// If session is RUNNING, update heartbeat (updated_at) to prevent timeout
 	if session.State == domain.RentalStateRunning {
-		h.logger.Debug("pod running but session already RUNNING (idempotent)",
-			"sessionId", sessionID,
-			"state", session.State,
-		)
+		if err := h.sessionRepo.TouchSession(ctx, sessionID); err != nil {
+			h.logger.Warn("failed to touch session (heartbeat)",
+				"sessionId", sessionID,
+				"error", err,
+			)
+			// Don't return error - heartbeat failure shouldn't block other processing
+		} else {
+			h.logger.Debug("session heartbeat updated",
+				"sessionId", sessionID,
+			)
+		}
 		return nil
 	}
 

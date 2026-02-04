@@ -195,6 +195,31 @@ func (s *K8sJoinService) CheckNodeInCluster(ctx context.Context, nodeName string
 	return len(strings.TrimSpace(string(output))) > 0, nil
 }
 
+// sanitizeLabelValue converts a string to a valid K8s label value
+// K8s labels must be 63 chars or less, alphanumeric with dashes, underscores, dots
+// Must start and end with alphanumeric character
+func sanitizeLabelValue(value string) string {
+	// Replace spaces with dashes
+	result := strings.ReplaceAll(value, " ", "-")
+	// Convert to lowercase
+	result = strings.ToLower(result)
+	// Keep only allowed characters: alphanumeric, -, _, .
+	var sanitized strings.Builder
+	for _, ch := range result {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			sanitized.WriteRune(ch)
+		}
+	}
+	result = sanitized.String()
+	// Trim leading/trailing non-alphanumeric
+	result = strings.Trim(result, "-_.")
+	// Limit to 63 characters
+	if len(result) > 63 {
+		result = result[:63]
+	}
+	return result
+}
+
 // LabelNodeForRental adds rental-related labels to a K8s node
 func (s *K8sJoinService) LabelNodeForRental(ctx context.Context, nodeName, providerID, gpuModel string) error {
 	if !s.enabled {
@@ -206,11 +231,15 @@ func (s *K8sJoinService) LabelNodeForRental(ctx context.Context, nodeName, provi
 		"worldland.io/rental-status=available",
 	}
 	if gpuModel != "" {
-		labels = append(labels, fmt.Sprintf("worldland.io/gpu-model=%s", gpuModel))
+		// Sanitize GPU model to be a valid K8s label value
+		sanitizedGPU := sanitizeLabelValue(gpuModel)
+		labels = append(labels, fmt.Sprintf("worldland.io/gpu-model=%s", sanitizedGPU))
 	}
 
-	labelArg := strings.Join(labels, ",")
-	cmd := exec.CommandContext(ctx, "kubectl", "label", "node", nodeName, labelArg, "--overwrite")
+	// Build kubectl args: label node <nodename> <label1> <label2> ... --overwrite
+	args := append([]string{"label", "node", nodeName}, labels...)
+	args = append(args, "--overwrite")
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to label node: %w, output: %s", err, string(output))

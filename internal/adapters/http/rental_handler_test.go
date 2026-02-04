@@ -83,6 +83,13 @@ func (m *rentalMockRentalSessionRepo) Update(ctx context.Context, session *domai
 	return nil
 }
 
+func (m *rentalMockRentalSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	if session, ok := m.sessions[sessionID]; ok {
+		session.UpdatedAt = time.Now()
+	}
+	return nil
+}
+
 func (m *rentalMockRentalSessionRepo) ListByUser(ctx context.Context, userAddress string, limit, offset int) ([]*domain.RentalSession, error) {
 	if m.listByUserErr != nil {
 		return nil, m.listByUserErr

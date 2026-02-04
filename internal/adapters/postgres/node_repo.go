@@ -206,17 +206,24 @@ func (r *PostgresNodeRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// ListActive retrieves all nodes with status 'active'
+// ListActive retrieves all nodes with status 'active' that don't have RUNNING/PENDING rentals
 // Implements matching.NodeLister interface for ProviderMatcher
 func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// Exclude nodes with active (PENDING or RUNNING) rental sessions
 	query := `
-		SELECT id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_second, api_endpoint, status, certificate_expiry, created_at, updated_at
-		FROM nodes
-		WHERE status = $1
-		ORDER BY created_at DESC
+		SELECT n.id, n.provider_id, n.gpu_uuid, n.gpu_type, n.memory_gb, n.price_per_second, n.api_endpoint, n.status, n.certificate_expiry, n.created_at, n.updated_at
+		FROM nodes n
+		WHERE n.status = $1
+		AND NOT EXISTS (
+			SELECT 1 FROM rental_sessions rs
+			WHERE rs.node_id = n.id
+			AND rs.state IN ('PENDING', 'RUNNING')
+			AND rs.deleted_at IS NULL
+		)
+		ORDER BY n.created_at DESC
 	`
 
 	rows, err := r.pool.Query(ctx, query, domain.NodeStatusActive)

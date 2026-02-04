@@ -27,6 +27,7 @@ type K8sConfig struct {
 	Enabled        bool   // Enable K8s integration
 	KubeconfigPath string // Path to kubeconfig (empty for in-cluster)
 	DefaultImage   string // Default GPU container image
+	ExternalHost   string // External host/IP for SSH access (defaults to MasterIP)
 
 	// K8s Join settings (Phase 29) - for nodes joining the cluster
 	JoinEnabled bool   // Enable automatic K8s join for new nodes
@@ -164,6 +165,7 @@ func LoadConfig() *Config {
 			Enabled:        k8sEnabledBool,
 			KubeconfigPath: os.Getenv("KUBECONFIG"),
 			DefaultImage:   getEnv("K8S_DEFAULT_IMAGE", "ubuntu:22.04"),
+			ExternalHost:   getEnv("K8S_EXTERNAL_HOST", os.Getenv("K8S_MASTER_IP")), // Default to MasterIP
 			JoinEnabled:    k8sJoinEnabledBool,
 			MasterIP:       os.Getenv("K8S_MASTER_IP"),
 			MasterPort:     k8sMasterPort,

@@ -69,6 +69,8 @@ type RentalSessionRepository interface {
 	// ListPendingWithTxHash finds PENDING sessions that have tx_hash set (for verification worker)
 	ListPendingWithTxHash(ctx context.Context) ([]*RentalSession, error)
 
+	// TouchSession updates updated_at timestamp to current time (heartbeat for timeout prevention)
+	TouchSession(ctx context.Context, sessionID string) error
 	// FindExpiringSessions finds RUNNING sessions with extended_until before cutoff time (16-01)
 	FindExpiringSessions(ctx context.Context, cutoff time.Time) ([]*RentalSession, error)
 	// UpdateExtension atomically updates session extension fields (16-01)

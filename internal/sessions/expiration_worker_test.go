@@ -99,6 +99,13 @@ func (s *SimpleSessionRepo) Update(ctx context.Context, session *domain.RentalSe
 	return nil
 }
 
+func (s *SimpleSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	if session, ok := s.sessions[sessionID]; ok {
+		session.UpdatedAt = time.Now()
+	}
+	return nil
+}
+
 func (s *SimpleSessionRepo) ListByUser(ctx context.Context, userAddress string, limit, offset int) ([]*domain.RentalSession, error) {
 	return nil, nil
 }

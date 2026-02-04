@@ -63,6 +63,11 @@ func (m *MockRentalSessionRepo) Update(ctx context.Context, session *domain.Rent
 	return args.Error(0)
 }
 
+func (m *MockRentalSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	args := m.Called(ctx, sessionID)
+	return args.Error(0)
+}
+
 func (m *MockRentalSessionRepo) ListByUser(ctx context.Context, userAddress string, limit, offset int) ([]*domain.RentalSession, error) {
 	args := m.Called(ctx, userAddress, limit, offset)
 	if args.Get(0) == nil {

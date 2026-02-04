@@ -19,7 +19,7 @@ CREATE INDEX idx_base_images_category ON base_images(category);
 -- Add docker_image column to rental_sessions
 -- Tracks which container image the user selected for their GPU workload
 ALTER TABLE rental_sessions
-ADD COLUMN docker_image VARCHAR(500) NOT NULL DEFAULT 'nvidia/cuda:12.1-runtime-ubuntu22.04';
+ADD COLUMN docker_image VARCHAR(500) NOT NULL DEFAULT 'nvidia/cuda:12.1.1-runtime-ubuntu22.04';
 
 -- Comments for documentation
 COMMENT ON TABLE base_images IS 'Catalog of preset GPU container images (PyTorch, TensorFlow, CUDA) that users can select during rental creation';

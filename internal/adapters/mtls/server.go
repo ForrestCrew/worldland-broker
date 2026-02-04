@@ -18,9 +18,10 @@ type Command struct {
 
 // CommandAck represents node acknowledgment of a command
 type CommandAck struct {
-	CommandID string `json:"command_id"`
-	Status    string `json:"status"` // "ok" or "error"
-	Error     string `json:"error,omitempty"`
+	CommandID string                 `json:"command_id"`
+	Status    string                 `json:"status"` // "ok" or "error"
+	Error     string                 `json:"error,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"` // Additional response data (e.g., hostname for K8s labeling)
 }
 
 // Server handles mTLS connections from nodes

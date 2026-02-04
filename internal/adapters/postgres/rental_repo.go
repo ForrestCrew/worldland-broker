@@ -129,6 +129,25 @@ func (r *RentalSessionRepository) Update(ctx context.Context, session *domain.Re
 	return nil
 }
 
+// TouchSession updates the updated_at timestamp to current time (heartbeat for timeout prevention)
+func (r *RentalSessionRepository) TouchSession(ctx context.Context, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `UPDATE rental_sessions SET updated_at = NOW() WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to touch session: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("rental session not found: %s", sessionID)
+	}
+
+	return nil
+}
+
 // ListByUser retrieves rental sessions for a specific user address with pagination
 func (r *RentalSessionRepository) ListByUser(ctx context.Context, userAddress string, limit, offset int) ([]*domain.RentalSession, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -200,8 +219,8 @@ func (r *RentalSessionRepository) FindStale(ctx context.Context, state domain.Re
 			deleted_at, extended_until, extension_count, total_extended_minutes,
 			docker_image, created_at, updated_at
 		FROM rental_sessions
-		WHERE state = $1 AND created_at < $2 AND deleted_at IS NULL
-		ORDER BY created_at ASC
+		WHERE state = $1 AND updated_at < $2 AND deleted_at IS NULL
+		ORDER BY updated_at ASC
 	`
 
 	rows, err := r.pool.Query(ctx, query, state, cutoff)

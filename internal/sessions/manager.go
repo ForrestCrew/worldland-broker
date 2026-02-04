@@ -229,6 +229,7 @@ func (m *SessionManager) TransitionToStopped(ctx context.Context, sessionID stri
 	session.EndTime = &endTime
 	session.TxHash = &txHash
 	session.BlockNumber = &blockNumber
+	session.SettledAmount = totalCost // Save settlement cost from blockchain event
 	session.UpdatedAt = time.Now()
 
 	if err := m.sessionRepo.Update(ctx, session); err != nil {

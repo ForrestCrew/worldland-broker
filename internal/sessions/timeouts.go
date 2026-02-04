@@ -15,7 +15,10 @@ const (
 
 	// RunningTimeout is how long a RUNNING session can go without heartbeat before failing
 	// RUNNING sessions with no node heartbeat are failed after this duration
-	RunningTimeout = 30 * time.Second
+	// Note: Currently there's no heartbeat mechanism, so this is effectively
+	// the maximum session duration. Set to 24 hours as a reasonable default.
+	// TODO: Implement proper heartbeat updates from pod watcher
+	RunningTimeout = 24 * time.Hour
 
 	// DefaultCheckInterval is how often to check for timeouts (Phase 14: updated to 1 minute)
 	DefaultCheckInterval = 1 * time.Minute
