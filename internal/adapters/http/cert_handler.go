@@ -60,3 +60,31 @@ func (h *CertHandler) GetRootCA(c *gin.Context) {
 	c.Data(http.StatusOK, "application/x-pem-file", caCert)
 }
 
+// IssueBootstrapCertificate issues a new mTLS certificate for initial node setup
+// POST /api/v1/certs/bootstrap
+// This endpoint requires JWT authentication but not an existing node
+// The certificate CN will be the wallet address from the JWT
+func (h *CertHandler) IssueBootstrapCertificate(c *gin.Context) {
+	// Get wallet address from JWT (set by auth middleware)
+	walletAddress := c.GetString("wallet_address")
+	if walletAddress == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	bundle, err := h.certService.IssueBootstrapCertificate(c.Request.Context(), walletAddress)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"certificate":    string(bundle.Certificate),
+		"private_key":    string(bundle.PrivateKey),
+		"ca_certificate": string(bundle.CACert),
+		"expires_at":     bundle.ExpiresAt.Format(time.RFC3339),
+		"wallet_address": bundle.WalletAddr,
+		"message":        "Bootstrap certificate issued. Node will auto-configure.",
+	})
+}
+

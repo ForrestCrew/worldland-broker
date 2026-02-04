@@ -135,3 +135,70 @@ func (s *CertService) IssueCertificate(ctx context.Context, nodeID, providerID s
 func (s *CertService) GetRootCA() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.caCert.Raw})
 }
+
+// BootstrapBundle contains certificate bundle for initial node setup
+type BootstrapBundle struct {
+	Certificate []byte    // PEM encoded certificate
+	PrivateKey  []byte    // PEM encoded private key
+	CACert      []byte    // PEM encoded CA certificate
+	ExpiresAt   time.Time
+	WalletAddr  string
+}
+
+// IssueBootstrapCertificate creates a new mTLS client certificate for a wallet address
+// This is used during initial node setup before node registration
+// The certificate CN contains the wallet address for identification
+func (s *CertService) IssueBootstrapCertificate(ctx context.Context, walletAddress string) (*BootstrapBundle, error) {
+	if walletAddress == "" {
+		return nil, fmt.Errorf("wallet address is required")
+	}
+
+	// Generate key pair for node
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate key: %w", err)
+	}
+
+	// Create certificate
+	notBefore := time.Now()
+	notAfter := notBefore.Add(s.certTTL)
+
+	serialNumber, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate serial number: %w", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   walletAddress, // CN = wallet address for identification
+			Organization: []string{"Worldland GPU Network"},
+		},
+		NotBefore:   notBefore,
+		NotAfter:    notAfter,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, // mTLS client auth
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, s.caCert, &privateKey.PublicKey, s.caKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create certificate: %w", err)
+	}
+
+	// Encode to PEM
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.caCert.Raw})
+
+	return &BootstrapBundle{
+		Certificate: certPEM,
+		PrivateKey:  keyPEM,
+		CACert:      caCertPEM,
+		ExpiresAt:   notAfter,
+		WalletAddr:  walletAddress,
+	}, nil
+}

@@ -83,8 +83,9 @@ func NewRouterWithConfig(
 			protected.GET("/nodes/:id", nodeHandler.GetNode)
 			protected.PATCH("/nodes/:id/price", nodeHandler.UpdateNodePrice)
 
-			// Certificate endpoint (PROV-02 mTLS)
+			// Certificate endpoints (PROV-02 mTLS)
 			protected.POST("/nodes/:id/certificate", certHandler.IssueCertificate)
+			protected.POST("/certs/bootstrap", certHandler.IssueBootstrapCertificate)
 
 			// Rental endpoints (03-07, 04-05, 14-03)
 			if rentalHandler != nil {
