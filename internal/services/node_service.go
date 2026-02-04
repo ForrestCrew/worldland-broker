@@ -80,7 +80,7 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		existingNode.GPUType = input.GPUType
 		existingNode.MemoryGB = input.MemoryGB
 		existingNode.PricePerSecond = input.PricePerSec
-		existingNode.Status = domain.NodeStatusPending
+		existingNode.Status = domain.NodeStatusActive // Active since node is connecting
 		existingNode.UpdatedAt = time.Now()
 
 		if err := s.nodeRepo.Update(ctx, existingNode); err != nil {
@@ -115,7 +115,7 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		GPUType:        input.GPUType,
 		MemoryGB:       input.MemoryGB,
 		PricePerSecond: input.PricePerSec,
-		Status:         domain.NodeStatusPending,
+		Status:         domain.NodeStatusActive, // Active since node is connecting
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}

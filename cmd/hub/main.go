@@ -356,18 +356,11 @@ func main() {
 		}
 
 		// Send K8s join command if enabled (Phase 29)
+		// Note: nodeID is the wallet address, which may be shared across multiple physical nodes
+		// We always send join command and let the node decide (it will skip if already joined)
 		if k8sJoinService != nil && k8sJoinService.IsEnabled() {
-			// Check if node is already in cluster or has pending join
-			if k8sJoinService.IsNodeJoined(nodeID) {
-				logger.Info("Node already joined K8s cluster", "nodeID", nodeID)
-				return
-			}
-			if k8sJoinService.IsPendingJoin(nodeID) {
-				logger.Info("Node has pending K8s join request", "nodeID", nodeID)
-				return
-			}
-
 			// Generate join token and send to node
+			// The node will check if it's already in the cluster before executing
 			joinInfo, err := k8sJoinService.GenerateJoinToken(ctx)
 			if err != nil {
 				logger.Error("Failed to generate K8s join token", "nodeID", nodeID, "error", err)
@@ -390,7 +383,6 @@ func main() {
 			if err := mtlsServer.SendCommand(nodeID, joinCmd); err != nil {
 				logger.Error("Failed to send K8s join command", "nodeID", nodeID, "error", err)
 			} else {
-				k8sJoinService.RequestJoin(nodeID)
 				logger.Info("K8s join command sent to node", "nodeID", nodeID)
 			}
 		}

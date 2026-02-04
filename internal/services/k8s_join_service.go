@@ -143,12 +143,24 @@ func (s *K8sJoinService) IsNodeJoined(nodeID string) bool {
 	return exists
 }
 
-// IsPendingJoin checks if a node has a pending join request
+// PendingJoinTimeout is how long a pending join request is considered valid
+// After this timeout, a new join command can be sent
+const PendingJoinTimeout = 2 * time.Minute
+
+// IsPendingJoin checks if a node has a recent pending join request
+// Returns false if the pending request has expired (allows retry)
 func (s *K8sJoinService) IsPendingJoin(nodeID string) bool {
 	s.pendingJoinsMu.RLock()
 	defer s.pendingJoinsMu.RUnlock()
-	_, exists := s.pendingJoins[nodeID]
-	return exists
+	requestTime, exists := s.pendingJoins[nodeID]
+	if !exists {
+		return false
+	}
+	// Check if request has expired
+	if time.Since(requestTime) > PendingJoinTimeout {
+		return false
+	}
+	return true
 }
 
 // GetJoinedNodes returns all nodes that have joined K8s
