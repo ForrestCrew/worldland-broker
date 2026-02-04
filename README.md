@@ -22,6 +22,34 @@ go build -o hub ./cmd/hub
 
 Verify: `curl http://localhost:8080/health` should return `{"status":"ok"}`
 
+## Provider Auto-Bootstrap
+
+Hub supports automatic certificate provisioning for new providers. When a provider runs worldland-node with a private key:
+
+```
+Provider Node                              Hub
+     │                                      │
+     ├──── POST /api/v1/auth/nonce ────────►│
+     │◄──────────── nonce ──────────────────┤
+     │                                      │
+     ├──── POST /api/v1/auth/login ────────►│  (SIWE signature)
+     │◄──────────── JWT token ──────────────┤
+     │                                      │
+     ├──── POST /api/v1/certs/bootstrap ───►│  (with JWT)
+     │◄──── certificate + key + CA ─────────┤
+     │                                      │
+     ├──── POST /api/v1/nodes ─────────────►│  (register node)
+     │◄──────────── node_id ────────────────┤
+     │                                      │
+     └═════ mTLS connection (8443) ════════►│  (heartbeat, metrics)
+```
+
+The `/api/v1/certs/bootstrap` endpoint:
+- Requires SIWE authentication (JWT token)
+- Returns PEM-encoded certificate, private key, and CA certificate
+- Certificate CN is set to the wallet address
+- Valid for 90 days
+
 ## Prerequisites
 
 **Required:**
@@ -250,6 +278,15 @@ make down      # Stop infrastructure
 | **2-User Rental Flow** | ✅ Complete | Provider + Renter full lifecycle |
 | **Blockchain Integration** | ✅ Complete | Real deposit, startRental, stopRental transactions |
 
+### Provider Auto-Bootstrap Path (Phase 29-30) ✅
+
+| Component | Test Coverage | Description |
+|-----------|---------------|-------------|
+| **SIWE Login** | ✅ Complete | Wallet authentication before cert issuance |
+| **Bootstrap Certificate** | ✅ Complete | Auto-provision mTLS certificate via HTTP API |
+| **GPU/CPU Node Detection** | ✅ Complete | Node auto-detects hardware type |
+| **K8s Cluster Join** | ✅ Complete | Node joins K8s cluster with kubeadm |
+
 ### Not Yet Tested ❌
 
 | Component | Status | Reason |
@@ -337,6 +374,7 @@ NODE_E2E=true go test -tags=e2e -v ./test/e2e/... -run TestNodeBased2UserRentalF
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | /api/v1/auth/logout | End session |
+| POST | /api/v1/certs/bootstrap | Issue bootstrap mTLS certificate (auto-provisioning) |
 | POST | /api/v1/nodes | Register node |
 | GET | /api/v1/nodes | List provider's nodes |
 | GET | /api/v1/nodes/:id | Get node details |
