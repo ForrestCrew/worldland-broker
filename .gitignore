@@ -1,5 +1,6 @@
 # Binaries
 hub
+hub-linux
 indexer
 main
 *.test
