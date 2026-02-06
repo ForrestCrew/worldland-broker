@@ -312,7 +312,7 @@ func (m *SessionManager) ExtendSession(
 	}
 
 	// 5. Calculate costs
-	pricePerSecond, ok := new(big.Int).SetString(session.PricePerSecond, 10)
+	pricePerSecond, ok := new(big.Int).SetString(cleanPrice(session.PricePerSecond), 10)
 	if !ok {
 		return nil, fmt.Errorf("invalid price per second: %s", session.PricePerSecond)
 	}

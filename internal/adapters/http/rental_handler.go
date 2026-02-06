@@ -851,6 +851,8 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 		}
 
 		// Include settlement amount for completed sessions
+		// DEBUG: Log settlement amount
+		fmt.Printf("[DEBUG] Session %s: SettledAmount='%s', State=%s\n", s.ID, s.SettledAmount, s.State)
 		if s.SettledAmount != "" {
 			info.SettlementAmount = cleanPriceString(s.SettledAmount)
 		}

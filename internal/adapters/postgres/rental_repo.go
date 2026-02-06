@@ -156,15 +156,21 @@ func (r *RentalSessionRepository) ListByUser(ctx context.Context, userAddress st
 	query := `
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
-			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			settled_at, settled_amount, deleted_at, extended_until, extension_count,
+			total_extended_minutes, created_at, updated_at
 		FROM rental_sessions
 		WHERE user_address = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`
 
-	return r.scanSessions(ctx, query, userAddress, limit, offset)
+	rows, err := r.pool.Query(ctx, query, userAddress, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query rental sessions: %w", err)
+	}
+	defer rows.Close()
+
+	return r.collectSessionsWithSettlement(rows)
 }
 
 // ListByProvider retrieves rental sessions for a specific provider address with pagination

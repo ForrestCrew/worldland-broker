@@ -3,6 +3,8 @@ package sessions
 import (
 	"context"
 	"log/slog"
+	"math/big"
+	"strings"
 	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
@@ -10,10 +12,18 @@ import (
 	"github.com/worldland/worldland-hub/internal/rental"
 )
 
+// cleanPrice removes decimal points from price strings for BigInt compatibility
+func cleanPrice(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
+
 const (
 	// DefaultExpirationInterval is how often to check for expired sessions
-	// CONTEXT.md specifies 1 minute check interval
-	DefaultExpirationInterval = 1 * time.Minute
+	// Reduced to 5 seconds for faster settlement processing
+	DefaultExpirationInterval = 5 * time.Second
 
 	// ExpirationBatchLimit prevents long-running queries
 	ExpirationBatchLimit = 100
@@ -129,6 +139,27 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 		}
 	}
 
+	// Calculate settlement amount = duration * price_per_second
+	endTime := time.Now()
+	settlementAmount := "0"
+	if session.StartTime != nil {
+		duration := endTime.Sub(*session.StartTime).Seconds()
+		if duration > 0 {
+			pricePerSecond, ok := new(big.Int).SetString(cleanPrice(session.PricePerSecond), 10)
+			if ok {
+				durationBig := big.NewInt(int64(duration))
+				total := new(big.Int).Mul(pricePerSecond, durationBig)
+				settlementAmount = total.String()
+				w.logger.Info("calculated settlement amount",
+					"sessionId", session.ID,
+					"duration", duration,
+					"pricePerSecond", session.PricePerSecond,
+					"settlementAmount", settlementAmount,
+				)
+			}
+		}
+	}
+
 	// Lookup node
 	node, err := w.nodeRepo.GetByID(ctx, session.NodeID)
 	if err != nil {
@@ -137,8 +168,8 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 			"nodeId", session.NodeID,
 			"error", err,
 		)
-		// Still try to transition state
-		if err := w.manager.TransitionToStopped(ctx, session.ID, time.Now(), "0", "", 0); err != nil {
+		// Still try to transition state with calculated settlement
+		if err := w.manager.TransitionToStopped(ctx, session.ID, endTime, settlementAmount, "", 0); err != nil {
 			w.logger.Error("failed to transition expired session to STOPPED", "error", err)
 		}
 		return
@@ -159,10 +190,10 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 		}
 	}
 
-	// Transition to STOPPED
+	// Transition to STOPPED with calculated settlement amount
 	// Note: In production, this would involve blockchain stopRental call
 	// For now, we just update database state - blockchain settlement happens separately
-	if err := w.manager.TransitionToStopped(ctx, session.ID, time.Now(), "0", "", 0); err != nil {
+	if err := w.manager.TransitionToStopped(ctx, session.ID, endTime, settlementAmount, "", 0); err != nil {
 		w.logger.Error("failed to transition expired session to STOPPED",
 			"sessionId", session.ID,
 			"error", err,
@@ -172,6 +203,7 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 
 	w.logger.Info("session expired and stopped",
 		"sessionId", session.ID,
+		"settlementAmount", settlementAmount,
 	)
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/big"
+	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/k8s"
@@ -31,6 +33,24 @@ func NewK8sStateHandler(
 
 // Ensure K8sStateHandler implements StateChangeHandler interface
 var _ k8s.StateChangeHandler = (*K8sStateHandler)(nil)
+
+// calculateSettlementAmount calculates settlement = duration * price_per_second
+func (h *K8sStateHandler) calculateSettlementAmount(session *domain.RentalSession, endTime time.Time) string {
+	if session.StartTime == nil {
+		return "0"
+	}
+	duration := endTime.Sub(*session.StartTime).Seconds()
+	if duration <= 0 {
+		return "0"
+	}
+	pricePerSecond, ok := new(big.Int).SetString(cleanPrice(session.PricePerSecond), 10)
+	if !ok {
+		return "0"
+	}
+	durationBig := big.NewInt(int64(duration))
+	total := new(big.Int).Mul(pricePerSecond, durationBig)
+	return total.String()
+}
 
 // OnPodRunning is called when a Pod becomes Running and Ready
 func (h *K8sStateHandler) OnPodRunning(ctx context.Context, sessionID string) error {
@@ -131,17 +151,21 @@ func (h *K8sStateHandler) OnPodSucceeded(ctx context.Context, sessionID string) 
 	}
 
 	// Transition to STOPPED (Pod completed normally)
+	endTime := time.Now()
+	settlementAmount := h.calculateSettlementAmount(session, endTime)
 	h.logger.Info("pod succeeded - transitioning session to STOPPED",
 		"sessionId", sessionID,
 		"currentState", session.State,
+		"settlementAmount", settlementAmount,
 	)
 
-	if err := h.sessionManager.TransitionToStopped(ctx, sessionID, session.UpdatedAt, "0", "", 0); err != nil {
+	if err := h.sessionManager.TransitionToStopped(ctx, sessionID, endTime, settlementAmount, "", 0); err != nil {
 		return fmt.Errorf("failed to transition to STOPPED: %w", err)
 	}
 
 	h.logger.Info("session transitioned to STOPPED due to pod success",
 		"sessionId", sessionID,
+		"settlementAmount", settlementAmount,
 	)
 
 	return nil
@@ -161,17 +185,21 @@ func (h *K8sStateHandler) OnPodDeleted(ctx context.Context, sessionID string) er
 
 	// If session exists and RUNNING, transition to STOPPED (unexpected deletion)
 	if session.State == domain.RentalStateRunning {
+		endTime := time.Now()
+		settlementAmount := h.calculateSettlementAmount(session, endTime)
 		h.logger.Warn("pod deleted unexpectedly - transitioning session to STOPPED",
 			"sessionId", sessionID,
 			"state", session.State,
+			"settlementAmount", settlementAmount,
 		)
 
-		if err := h.sessionManager.TransitionToStopped(ctx, sessionID, session.UpdatedAt, "0", "", 0); err != nil {
+		if err := h.sessionManager.TransitionToStopped(ctx, sessionID, endTime, settlementAmount, "", 0); err != nil {
 			return fmt.Errorf("failed to transition to STOPPED: %w", err)
 		}
 
 		h.logger.Info("session transitioned to STOPPED due to unexpected pod deletion",
 			"sessionId", sessionID,
+			"settlementAmount", settlementAmount,
 		)
 		return nil
 	}

@@ -3,11 +3,20 @@ package http
 import (
 	"math/big"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/settlement"
 )
+
+// cleanBalancePriceString removes decimal points from price strings for BigInt compatibility
+func cleanBalancePriceString(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
 
 // BalanceResponse for GET /api/v1/balance
 type BalanceResponse struct {
@@ -84,8 +93,8 @@ func (h *BalanceHandler) GetBalance(c *gin.Context) {
 	// Estimate remaining time if active rental
 	var estimatedMinutes int64
 	if activeCount > 0 && len(runningSessions) > 0 {
-		// Use rate from first active session
-		pricePerSecond, _ := new(big.Int).SetString(runningSessions[0].PricePerSecond, 10)
+		// Use rate from first active session (clean decimal for BigInt compatibility)
+		pricePerSecond, _ := new(big.Int).SetString(cleanBalancePriceString(runningSessions[0].PricePerSecond), 10)
 		estimatedMinutes = h.calculator.CalculateEstimatedMinutesRemaining(availableBalance, pricePerSecond)
 	}
 

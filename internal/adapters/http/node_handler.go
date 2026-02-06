@@ -1,12 +1,22 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/services"
 )
+
+// cleanNodePriceString removes decimal points from price strings for BigInt compatibility
+func cleanNodePriceString(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
 
 // NodeHandler handles node HTTP requests
 type NodeHandler struct {
@@ -73,14 +83,20 @@ func (h *NodeHandler) UpdateNodePrice(c *gin.Context) {
 	providerID := c.GetString("provider_id")
 	nodeID := c.Param("id")
 
+	fmt.Printf("[DEBUG UpdateNodePrice] providerID=%s nodeID=%s\n", providerID, nodeID)
+
 	var req UpdatePriceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		fmt.Printf("[DEBUG UpdateNodePrice] bind error: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	fmt.Printf("[DEBUG UpdateNodePrice] price_per_sec=%s\n", req.PricePerSec)
+
 	node, err := h.nodeService.UpdateNodePricing(c.Request.Context(), nodeID, providerID, req.PricePerSec)
 	if err != nil {
+		fmt.Printf("[DEBUG UpdateNodePrice] service error: %v\n", err)
 		if err.Error() == "not authorized to update this node" {
 			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 			return
@@ -98,6 +114,42 @@ func (h *NodeHandler) UpdateNodePrice(c *gin.Context) {
 		"price_per_sec": node.PricePerSecond,
 		"message":       "Price updated. New rentals will use updated price.",
 	})
+}
+
+// NodeResponse is a cleaned node response for API compatibility
+type NodeResponse struct {
+	ID                string            `json:"id"`
+	ProviderID        string            `json:"providerId"`
+	GPUUUID           string            `json:"gpuUuid"`
+	GPUType           string            `json:"gpuType"`
+	MemoryGB          int               `json:"memoryGb"`
+	PricePerSecond    string            `json:"pricePerSecond"`
+	APIEndpoint       string            `json:"apiEndpoint"`
+	Status            domain.NodeStatus `json:"status"`
+	CertificateExpiry *string           `json:"certificateExpiry,omitempty"`
+	CreatedAt         string            `json:"createdAt"`
+	UpdatedAt         string            `json:"updatedAt"`
+}
+
+// toNodeResponse converts a domain.Node to NodeResponse with cleaned price
+func toNodeResponse(n *domain.Node) *NodeResponse {
+	resp := &NodeResponse{
+		ID:             n.ID,
+		ProviderID:     n.ProviderID,
+		GPUUUID:        n.GPUUUID,
+		GPUType:        n.GPUType,
+		MemoryGB:       n.MemoryGB,
+		PricePerSecond: cleanNodePriceString(n.PricePerSecond),
+		APIEndpoint:    n.APIEndpoint,
+		Status:         n.Status,
+		CreatedAt:      n.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:      n.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if n.CertificateExpiry != nil {
+		expiry := n.CertificateExpiry.Format("2006-01-02T15:04:05Z07:00")
+		resp.CertificateExpiry = &expiry
+	}
+	return resp
 }
 
 // ListNodes returns all nodes for the authenticated provider
@@ -120,9 +172,15 @@ func (h *NodeHandler) ListNodes(c *gin.Context) {
 		return
 	}
 
+	// Convert to cleaned response format
+	result := make([]*NodeResponse, len(nodes))
+	for i, n := range nodes {
+		result[i] = toNodeResponse(n)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"nodes": nodes,
-		"count": len(nodes),
+		"nodes": result,
+		"count": len(result),
 	})
 }
 
@@ -137,5 +195,5 @@ func (h *NodeHandler) GetNode(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, node)
+	c.JSON(http.StatusOK, toNodeResponse(node))
 }

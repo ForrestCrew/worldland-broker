@@ -137,7 +137,7 @@ func (p *BatchProcessor) settleSession(ctx context.Context, session *domain.Rent
 	}
 
 	// Calculate cost
-	pricePerSecond, ok := new(big.Int).SetString(session.PricePerSecond, 10)
+	pricePerSecond, ok := new(big.Int).SetString(cleanPriceStr(session.PricePerSecond), 10)
 	if !ok {
 		return nil // Invalid price, skip
 	}

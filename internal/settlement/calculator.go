@@ -4,10 +4,18 @@ import (
 	"context"
 	"math"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
 )
+
+func cleanPriceStr(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
 
 // Calculator handles settlement cost calculations
 type Calculator struct {
@@ -63,7 +71,7 @@ func (c *Calculator) CalculatePendingSettlement(ctx context.Context, userAddress
 		if s.StartTime == nil {
 			continue // Shouldn't happen, but be safe
 		}
-		pricePerSecond, ok := new(big.Int).SetString(s.PricePerSecond, 10)
+		pricePerSecond, ok := new(big.Int).SetString(cleanPriceStr(s.PricePerSecond), 10)
 		if !ok {
 			continue
 		}
@@ -76,7 +84,7 @@ func (c *Calculator) CalculatePendingSettlement(ctx context.Context, userAddress
 		if s.StartTime == nil || s.EndTime == nil {
 			continue
 		}
-		pricePerSecond, ok := new(big.Int).SetString(s.PricePerSecond, 10)
+		pricePerSecond, ok := new(big.Int).SetString(cleanPriceStr(s.PricePerSecond), 10)
 		if !ok {
 			continue
 		}
@@ -130,7 +138,7 @@ func (c *Calculator) CalculateSessionCost(session *domain.RentalSession) *Sessio
 	duration := end.Sub(*session.StartTime)
 	minutes := int64(math.Ceil(duration.Minutes()))
 
-	pricePerSecond, _ := new(big.Int).SetString(session.PricePerSecond, 10)
+	pricePerSecond, _ := new(big.Int).SetString(cleanPriceStr(session.PricePerSecond), 10)
 	cost := c.CalculateCost(*session.StartTime, end, pricePerSecond)
 
 	return &SessionCostBreakdown{

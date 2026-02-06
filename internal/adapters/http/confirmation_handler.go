@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +13,14 @@ import (
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/k8s"
 )
+
+// cleanConfirmPriceString removes decimal points from price strings for BigInt compatibility
+func cleanConfirmPriceString(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
 
 // txHashRegex validates Ethereum transaction hash format: 0x followed by 64 hex characters
 var txHashRegex = regexp.MustCompile(`^0x[a-fA-F0-9]{64}$`)
@@ -264,7 +273,7 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 		NodeID:          session.NodeID,
 		ProviderAddress: session.ProviderAddress,
 		State:           string(session.State),
-		PricePerSecond:  session.PricePerSecond,
+		PricePerSecond:  cleanConfirmPriceString(session.PricePerSecond),
 		RentalID:        session.RentalID,
 		TxHash:          session.TxHash,
 		CreatedAt:       session.CreatedAt.Format(time.RFC3339),

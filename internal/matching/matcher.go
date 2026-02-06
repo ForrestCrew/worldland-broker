@@ -9,6 +9,13 @@ import (
 	"github.com/worldland/worldland-hub/internal/domain"
 )
 
+func cleanMatchPrice(price string) string {
+	if idx := strings.Index(price, "."); idx != -1 {
+		return price[:idx]
+	}
+	return price
+}
+
 // Default values
 const (
 	DefaultLimit = 20
@@ -147,7 +154,7 @@ func (m *ProviderMatcher) applyFilters(nodes []*domain.Node, req MatchRequest) [
 		// Filter by maximum price
 		if maxPrice != nil {
 			nodePrice := new(big.Int)
-			nodePrice.SetString(node.PricePerSecond, 10)
+			nodePrice.SetString(cleanMatchPrice(node.PricePerSecond), 10)
 			if nodePrice.Cmp(maxPrice) > 0 {
 				continue
 			}
@@ -172,8 +179,8 @@ func (m *ProviderMatcher) sortNodes(nodes []*domain.Node, sortBy string) {
 		sort.Slice(nodes, func(i, j int) bool {
 			priceI := new(big.Int)
 			priceJ := new(big.Int)
-			priceI.SetString(nodes[i].PricePerSecond, 10)
-			priceJ.SetString(nodes[j].PricePerSecond, 10)
+			priceI.SetString(cleanMatchPrice(nodes[i].PricePerSecond), 10)
+			priceJ.SetString(cleanMatchPrice(nodes[j].PricePerSecond), 10)
 			return priceI.Cmp(priceJ) < 0
 		})
 	}
