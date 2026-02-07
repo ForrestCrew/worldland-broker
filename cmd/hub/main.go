@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
@@ -16,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +32,7 @@ import (
 	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/monitoring"
+	"github.com/worldland/worldland-hub/internal/remote"
 	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
 	"github.com/worldland/worldland-hub/internal/sessions"
@@ -62,19 +61,8 @@ func main() {
 	var podWatcher *k8s.PodWatcher
 	var metricsCollector *k8s.MetricsCollector
 
-	// Initialize K8s join service (Phase 29)
-	var k8sJoinService *services.K8sJoinService
-	if cfg.K8s.JoinEnabled && cfg.K8s.MasterIP != "" {
-		k8sJoinService = services.NewK8sJoinService(&services.K8sJoinConfig{
-			MasterIP:   cfg.K8s.MasterIP,
-			MasterPort: cfg.K8s.MasterPort,
-			Enabled:    true,
-		})
-		logger.Info("K8s join service initialized",
-			"masterIP", cfg.K8s.MasterIP,
-			"masterPort", cfg.K8s.MasterPort,
-		)
-	}
+	// K8s join service removed in V3 - nodes use Docker directly
+	// External providers don't need kubeadm join
 
 	if cfg.K8s.Enabled {
 		k8sManager := k8s.GetManager()
@@ -341,59 +329,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Remote JobManager for Docker-based providers (V3)
+	remoteJobManager := remote.NewJobManager(mtlsServer, logger)
+
 	// Wire CommandAck response handler - Hub processes node responses
+	// Remote JobManager handles command acks and container state updates
 	mtlsServer.OnMessage = func(nodeID string, msg []byte) {
-		var ack mtls.CommandAck
-		if err := json.Unmarshal(msg, &ack); err != nil {
-			logger.Error("Failed to parse CommandAck", "nodeID", nodeID, "error", err)
-			return
-		}
-		logger.Info("Received CommandAck", "nodeID", nodeID, "commandID", ack.CommandID, "status", ack.Status)
-
-		// Handle K8s join acknowledgment - label the K8s node automatically
-		if strings.HasPrefix(ack.CommandID, "join-k8s-") && ack.Status == "ok" {
-			if ack.Payload != nil {
-				if hostname, ok := ack.Payload["hostname"].(string); ok && hostname != "" {
-					// nodeID from mTLS cert is the wallet address (e.g., 0x70997970...)
-					// We need to look up the provider by wallet to get the UUID provider_id
-					provider, err := providerRepo.GetByWallet(ctx, nodeID)
-					if err != nil {
-						logger.Error("Failed to get provider by wallet for K8s labeling", "wallet", nodeID, "error", err)
-						return
-					}
-
-					// Get nodes for this provider using the UUID provider_id
-					nodes, err := nodeRepo.GetByProvider(ctx, provider.ID)
-					if err != nil || len(nodes) == 0 {
-						logger.Warn("No nodes found for K8s labeling", "providerID", provider.ID, "wallet", nodeID)
-						return
-					}
-
-					// Use the first node's info for labeling
-					node := nodes[0]
-
-					// Label the K8s node with provider-id and gpu-model
-					if k8sJoinService != nil && k8sJoinService.IsEnabled() {
-						if err := k8sJoinService.LabelNodeForRental(ctx, hostname, node.ProviderID, node.GPUType); err != nil {
-							logger.Error("Failed to label K8s node", "hostname", hostname, "providerID", node.ProviderID, "error", err)
-						} else {
-							logger.Info("K8s node labeled successfully", "hostname", hostname, "providerID", node.ProviderID, "gpuModel", node.GPUType)
-						}
-					}
-				}
-			}
-		}
+		// Delegate to remote job manager for command ack processing
+		remoteJobManager.HandleNodeMessage(nodeID, msg)
 	}
 
-	// Wire auto-registration handler - register node when it connects via mTLS (Phase 27)
+	// Wire auto-registration handler - register node when it connects via mTLS
 	mtlsServer.OnNodeConnected = func(nodeID string) {
 		logger.Info("Node connected via mTLS, auto-registering", "nodeID", nodeID)
 		input := services.AutoRegisterNodeInput{
 			NodeID:      nodeID,
-			GPUType:     "NVIDIA RTX 4090", // Default for E2E, will be updated by node heartbeat
+			GPUType:     "NVIDIA RTX 4090", // Default, will be updated by node heartbeat
 			MemoryGB:    24,                // Default
-			PricePerSec: "1000000000",      // 1 Gwei per second (fits NUMERIC(18,8))
-			APIEndpoint: fmt.Sprintf("https://%s:8444", nodeID), // Node's mTLS endpoint
+			PricePerSec: "1000000000",      // 1 Gwei per second
+			APIEndpoint: fmt.Sprintf("https://%s:8444", nodeID),
 		}
 		if _, err := nodeService.AutoRegisterNode(ctx, input); err != nil {
 			logger.Error("Failed to auto-register node", "nodeID", nodeID, "error", err)
@@ -401,37 +355,8 @@ func main() {
 			logger.Info("Node auto-registered successfully", "nodeID", nodeID)
 		}
 
-		// Send K8s join command if enabled (Phase 29)
-		// Note: nodeID is the wallet address, which may be shared across multiple physical nodes
-		// We always send join command and let the node decide (it will skip if already joined)
-		if k8sJoinService != nil && k8sJoinService.IsEnabled() {
-			// Generate join token and send to node
-			// The node will check if it's already in the cluster before executing
-			joinInfo, err := k8sJoinService.GenerateJoinToken(ctx)
-			if err != nil {
-				logger.Error("Failed to generate K8s join token", "nodeID", nodeID, "error", err)
-				return
-			}
-
-			// Send join command to node
-			joinCmd := mtls.Command{
-				ID:   fmt.Sprintf("join-k8s-%s-%d", nodeID, time.Now().Unix()),
-				Type: "join_k8s",
-				Payload: map[string]interface{}{
-					"join_command": joinInfo.JoinCommand,
-					"join_token":   joinInfo.JoinToken,
-					"master_ip":    joinInfo.MasterIP,
-					"master_port":  joinInfo.MasterPort,
-					"ca_hash":      joinInfo.CAHash,
-				},
-			}
-
-			if err := mtlsServer.SendCommand(nodeID, joinCmd); err != nil {
-				logger.Error("Failed to send K8s join command", "nodeID", nodeID, "error", err)
-			} else {
-				logger.Info("K8s join command sent to node", "nodeID", nodeID)
-			}
-		}
+		// K8s join is no longer sent in V3 - nodes use Docker directly
+		// External providers don't need to join a K8s cluster
 	}
 
 	// Wire node disconnect handler - mark node as offline (Phase 27)
@@ -452,7 +377,17 @@ func main() {
 
 	// Initialize command service
 	commandService := services.NewCommandService(mtlsServer)
-	_ = commandService // Will be used in Phase 4 for Hub-Node commands
+	_ = commandService // Available for direct mTLS commands
+
+	// Initialize Remote state handler for Docker-based providers (V3)
+	// This bridges container state updates from nodes to the session manager
+	remoteStateHandler := sessions.NewRemoteStateHandler(
+		rentalSessionManager,
+		rentalSessionRepo,
+		logger,
+	)
+	remoteStateReceiver := remote.NewStateReceiver(remoteStateHandler, remoteJobManager, logger)
+	_ = remoteStateReceiver // Used when nodes send container state updates
 
 	// Start background services
 	// Event listener (if enabled)

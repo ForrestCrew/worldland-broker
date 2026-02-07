@@ -17,22 +17,32 @@ func NewCommandService(mtlsServer *mtls.Server) *CommandService {
 	}
 }
 
-// SendStartJob sends a start job command to a node (Phase 4)
-func (s *CommandService) SendStartJob(nodeID string, payload map[string]interface{}) error {
+// SendStartRental sends a start_rental command to a node
+func (s *CommandService) SendStartRental(nodeID string, payload map[string]interface{}) error {
 	cmd := mtls.Command{
 		ID:      uuid.New().String(),
-		Type:    "start_job",
+		Type:    "start_rental",
 		Payload: payload,
 	}
 	return s.mtlsServer.SendCommand(nodeID, cmd)
 }
 
-// SendStopJob sends a stop job command to a node (Phase 4)
-func (s *CommandService) SendStopJob(nodeID string, payload map[string]interface{}) error {
+// SendStopRental sends a stop_rental command to a node
+func (s *CommandService) SendStopRental(nodeID string, payload map[string]interface{}) error {
 	cmd := mtls.Command{
 		ID:      uuid.New().String(),
-		Type:    "stop_job",
+		Type:    "stop_rental",
 		Payload: payload,
 	}
 	return s.mtlsServer.SendCommand(nodeID, cmd)
+}
+
+// SendStartJob sends a start job command to a node (legacy alias)
+func (s *CommandService) SendStartJob(nodeID string, payload map[string]interface{}) error {
+	return s.SendStartRental(nodeID, payload)
+}
+
+// SendStopJob sends a stop job command to a node (legacy alias)
+func (s *CommandService) SendStopJob(nodeID string, payload map[string]interface{}) error {
+	return s.SendStopRental(nodeID, payload)
 }
