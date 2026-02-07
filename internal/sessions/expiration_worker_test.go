@@ -242,6 +242,10 @@ func (s *SimpleProviderRepo) List(ctx context.Context) ([]*domain.Provider, erro
 	return nil, nil
 }
 
+func (s *SimpleProviderRepo) ListByType(ctx context.Context, providerType domain.ProviderType) ([]*domain.Provider, error) {
+	return nil, nil
+}
+
 // SimpleNodeClient - minimal node client
 type SimpleNodeClient struct{}
 

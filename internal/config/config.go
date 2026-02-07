@@ -70,6 +70,10 @@ type Config struct {
 
 	// K8s integration (Phase 22)
 	K8s K8sConfig
+
+	// Phase 3: External provider settings
+	ExternalProvidersEnabled bool   // Enable external K8s provider registration
+	KubeconfigEncryptionKey string // AES-256-GCM key for kubeconfig encryption (hex)
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -170,6 +174,9 @@ func LoadConfig() *Config {
 			MasterIP:       os.Getenv("K8S_MASTER_IP"),
 			MasterPort:     k8sMasterPort,
 		},
+
+		ExternalProvidersEnabled: os.Getenv("EXTERNAL_PROVIDERS_ENABLED") == "true",
+		KubeconfigEncryptionKey:  os.Getenv("KUBECONFIG_ENCRYPTION_KEY"),
 	}
 }
 

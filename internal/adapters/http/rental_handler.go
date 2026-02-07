@@ -30,8 +30,9 @@ type RentalHandler struct {
 	nodeRepo         domain.NodeRepository
 	nodeClient       rental.NodeClientInterface
 	balanceValidator blockchain.BalanceValidatorInterface
-	imageRepo        domain.ImageRepository // Optional, for preset image listing (24-03)
-	jobManager       *k8s.JobManager        // Optional, for K8s-based SSH info retrieval
+	imageRepo        domain.ImageRepository     // Optional, for preset image listing (24-03)
+	jobManager       *k8s.JobManager            // Optional, for K8s-based SSH info retrieval (legacy)
+	executorRouter   *sessions.ExecutorRouter    // Phase 3: provider-type-aware SSH info
 }
 
 // NewRentalHandler creates a new rental handler
@@ -61,9 +62,15 @@ func (h *RentalHandler) WithImageRepository(repo domain.ImageRepository) *Rental
 	return h
 }
 
-// WithK8s sets the JobManager for K8s-based SSH info retrieval
+// WithK8s sets the JobManager for K8s-based SSH info retrieval (legacy)
 func (h *RentalHandler) WithK8s(jobManager *k8s.JobManager) *RentalHandler {
 	h.jobManager = jobManager
+	return h
+}
+
+// WithExecutorRouter sets the ExecutorRouter for provider-type-aware operations (Phase 3)
+func (h *RentalHandler) WithExecutorRouter(router *sessions.ExecutorRouter) *RentalHandler {
+	h.executorRouter = router
 	return h
 }
 
@@ -442,7 +449,37 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 		return
 	}
 
-	// K8s-based SSH info retrieval (primary path)
+	// Phase 3: ExecutorRouter-based SSH info retrieval (provider-type aware)
+	if h.executorRouter != nil {
+		sshInfo, err := h.executorRouter.GetSSHConnectionInfo(c.Request.Context(), session)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "container not ready",
+				"message": "Container is starting. Please retry in a few seconds.",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		user := sshInfo.User
+		if user == "" {
+			user = "user"
+		}
+		sshCommand := fmt.Sprintf("ssh %s@%s -p %d", user, sshInfo.Host, sshInfo.Port)
+
+		c.JSON(http.StatusOK, StartRentalResponse{
+			SessionID:   sessionID,
+			SSHHost:     sshInfo.Host,
+			SSHPort:     int(sshInfo.Port),
+			SSHUser:     user,
+			SSHPassword: sshInfo.Password,
+			SSHCommand:  sshCommand,
+			Message:     "Container ready",
+		})
+		return
+	}
+
+	// Legacy: K8s-based SSH info retrieval
 	if h.jobManager != nil {
 		sshInfo, err := h.jobManager.GetSSHConnectionInfo(c.Request.Context(), session.UserAddress, sessionID)
 		if err != nil {
@@ -866,14 +903,27 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 			}
 		}
 
-		// Get SSH connection info for RUNNING sessions
-		if s.State == domain.RentalStateRunning && h.jobManager != nil {
-			sshInfo, err := h.jobManager.GetSSHConnectionInfo(ctx, userAddress, s.ID)
-			if err == nil && sshInfo != nil {
-				info.SSHHost = sshInfo.Host
-				info.SSHPort = int(sshInfo.Port)
-				info.SSHUser = "user"
-				info.SSHPassword = sshInfo.Password
+		// Get SSH connection info for RUNNING sessions (Phase 3: provider-type aware)
+		if s.State == domain.RentalStateRunning {
+			if h.executorRouter != nil {
+				sshInfo, err := h.executorRouter.GetSSHConnectionInfo(ctx, s)
+				if err == nil && sshInfo != nil {
+					info.SSHHost = sshInfo.Host
+					info.SSHPort = int(sshInfo.Port)
+					info.SSHUser = sshInfo.User
+					if info.SSHUser == "" {
+						info.SSHUser = "user"
+					}
+					info.SSHPassword = sshInfo.Password
+				}
+			} else if h.jobManager != nil {
+				sshInfo, err := h.jobManager.GetSSHConnectionInfo(ctx, userAddress, s.ID)
+				if err == nil && sshInfo != nil {
+					info.SSHHost = sshInfo.Host
+					info.SSHPort = int(sshInfo.Port)
+					info.SSHUser = "user"
+					info.SSHPassword = sshInfo.Password
+				}
 			}
 		}
 

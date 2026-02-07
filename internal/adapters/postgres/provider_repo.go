@@ -27,15 +27,24 @@ func (r *PostgresProviderRepository) Create(ctx context.Context, provider *domai
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// Default provider_type to "docker" if not set
+	providerType := provider.ProviderType
+	if providerType == "" {
+		providerType = domain.ProviderTypeDocker
+	}
+
 	query := `
-		INSERT INTO providers (id, wallet_address, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO providers (id, wallet_address, status, provider_type, kubeconfig_data, cluster_host, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
 	_, err := r.pool.Exec(ctx, query,
 		provider.ID,
 		provider.WalletAddress,
 		provider.Status,
+		providerType,
+		provider.KubeconfigData,
+		provider.ClusterHost,
 		provider.CreatedAt,
 		provider.UpdatedAt,
 	)
@@ -53,7 +62,7 @@ func (r *PostgresProviderRepository) GetByID(ctx context.Context, id string) (*d
 	defer cancel()
 
 	query := `
-		SELECT id, wallet_address, status, created_at, updated_at
+		SELECT id, wallet_address, status, provider_type, kubeconfig_data, cluster_host, created_at, updated_at
 		FROM providers
 		WHERE id = $1
 	`
@@ -63,6 +72,9 @@ func (r *PostgresProviderRepository) GetByID(ctx context.Context, id string) (*d
 		&provider.ID,
 		&provider.WalletAddress,
 		&provider.Status,
+		&provider.ProviderType,
+		&provider.KubeconfigData,
+		&provider.ClusterHost,
 		&provider.CreatedAt,
 		&provider.UpdatedAt,
 	)
@@ -80,7 +92,7 @@ func (r *PostgresProviderRepository) GetByWallet(ctx context.Context, walletAddr
 	defer cancel()
 
 	query := `
-		SELECT id, wallet_address, status, created_at, updated_at
+		SELECT id, wallet_address, status, provider_type, kubeconfig_data, cluster_host, created_at, updated_at
 		FROM providers
 		WHERE wallet_address = $1
 	`
@@ -90,6 +102,9 @@ func (r *PostgresProviderRepository) GetByWallet(ctx context.Context, walletAddr
 		&provider.ID,
 		&provider.WalletAddress,
 		&provider.Status,
+		&provider.ProviderType,
+		&provider.KubeconfigData,
+		&provider.ClusterHost,
 		&provider.CreatedAt,
 		&provider.UpdatedAt,
 	)
@@ -108,7 +123,7 @@ func (r *PostgresProviderRepository) Update(ctx context.Context, provider *domai
 
 	query := `
 		UPDATE providers
-		SET wallet_address = $2, status = $3, updated_at = $4
+		SET wallet_address = $2, status = $3, provider_type = $4, kubeconfig_data = $5, cluster_host = $6, updated_at = $7
 		WHERE id = $1
 	`
 
@@ -116,6 +131,9 @@ func (r *PostgresProviderRepository) Update(ctx context.Context, provider *domai
 		provider.ID,
 		provider.WalletAddress,
 		provider.Status,
+		provider.ProviderType,
+		provider.KubeconfigData,
+		provider.ClusterHost,
 		provider.UpdatedAt,
 	)
 
@@ -124,4 +142,43 @@ func (r *PostgresProviderRepository) Update(ctx context.Context, provider *domai
 	}
 
 	return nil
+}
+
+// ListByType retrieves all providers of a specific type
+func (r *PostgresProviderRepository) ListByType(ctx context.Context, providerType domain.ProviderType) ([]*domain.Provider, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, wallet_address, status, provider_type, kubeconfig_data, cluster_host, created_at, updated_at
+		FROM providers
+		WHERE provider_type = $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := r.pool.Query(ctx, query, providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list providers by type: %w", err)
+	}
+	defer rows.Close()
+
+	var providers []*domain.Provider
+	for rows.Next() {
+		var p domain.Provider
+		if err := rows.Scan(
+			&p.ID,
+			&p.WalletAddress,
+			&p.Status,
+			&p.ProviderType,
+			&p.KubeconfigData,
+			&p.ClusterHost,
+			&p.CreatedAt,
+			&p.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan provider: %w", err)
+		}
+		providers = append(providers, &p)
+	}
+
+	return providers, nil
 }

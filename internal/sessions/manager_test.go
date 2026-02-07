@@ -235,6 +235,10 @@ func (m *mockProviderRepo) Update(ctx context.Context, provider *domain.Provider
 	return nil
 }
 
+func (m *mockProviderRepo) ListByType(ctx context.Context, providerType domain.ProviderType) ([]*domain.Provider, error) {
+	return nil, nil
+}
+
 // Test fixtures
 func setupTestManager() (*SessionManager, *mockRentalSessionRepo, *mockNodeRepo, *mockProviderRepo) {
 	sessionRepo := newMockRentalSessionRepo()

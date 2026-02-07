@@ -12,9 +12,12 @@ const (
 
 // Provider represents a GPU provider in the system
 type Provider struct {
-	ID            string         `json:"id"`
-	WalletAddress string         `json:"walletAddress"`
-	Status        ProviderStatus `json:"status"`
-	CreatedAt     time.Time      `json:"createdAt"`
-	UpdatedAt     time.Time      `json:"updatedAt"`
+	ID             string         `json:"id"`
+	WalletAddress  string         `json:"walletAddress"`
+	Status         ProviderStatus `json:"status"`
+	ProviderType   ProviderType   `json:"providerType"`           // "docker" (default) or "k8s"
+	KubeconfigData *string        `json:"kubeconfigData,omitempty"` // Encrypted kubeconfig for K8s providers
+	ClusterHost    *string        `json:"clusterHost,omitempty"`    // K8s API server address (display only)
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
 }

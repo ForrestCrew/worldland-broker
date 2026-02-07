@@ -39,6 +39,8 @@ type ExpirationWorker struct {
 	logger      *slog.Logger
 	// NEW: K8s integration
 	jobManager *k8s.JobManager
+	// Phase 3: ExecutorRouter for provider-type branching
+	executorRouter *ExecutorRouter
 }
 
 // NewExpirationWorker creates a new background worker for auto-expiring sessions
@@ -65,9 +67,15 @@ func (w *ExpirationWorker) WithInterval(interval time.Duration) *ExpirationWorke
 	return w
 }
 
-// WithK8s configures K8s integration for Pod deletion on expiration
+// WithK8s configures K8s integration for Pod deletion on expiration (legacy)
 func (w *ExpirationWorker) WithK8s(jobManager *k8s.JobManager) *ExpirationWorker {
 	w.jobManager = jobManager
+	return w
+}
+
+// WithExecutorRouter configures the executor router for provider-type branching (Phase 3)
+func (w *ExpirationWorker) WithExecutorRouter(router *ExecutorRouter) *ExpirationWorker {
+	w.executorRouter = router
 	return w
 }
 
@@ -124,14 +132,25 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 		"extendedUntil", session.ExtendedUntil,
 	)
 
-	// NEW: Delete K8s Pod first (idempotent)
-	if w.jobManager != nil {
+	// Phase 3: Delete container via ExecutorRouter (provider-type aware)
+	if w.executorRouter != nil {
+		if err := w.executorRouter.DeleteSessionContainer(ctx, session); err != nil {
+			w.logger.Error("failed to delete container for expired session",
+				"sessionId", session.ID,
+				"error", err,
+			)
+		} else {
+			w.logger.Info("deleted container for expired session",
+				"sessionId", session.ID,
+			)
+		}
+	} else if w.jobManager != nil {
+		// Legacy: Delete K8s Pod first (idempotent)
 		if err := w.jobManager.DeleteGPUSession(ctx, session.UserAddress, session.ID); err != nil {
 			w.logger.Error("failed to delete K8s pod for expired session",
 				"sessionId", session.ID,
 				"error", err,
 			)
-			// Continue - Pod might not exist or already deleted
 		} else {
 			w.logger.Info("deleted K8s pod for expired session",
 				"sessionId", session.ID,

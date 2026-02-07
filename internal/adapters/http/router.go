@@ -26,7 +26,7 @@ func NewRouter(
 	monitoringHandler *MonitoringHandler,
 	sessionManager *auth.SessionManager,
 ) *gin.Engine {
-	return NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, RouterConfig{})
+	return NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, RouterConfig{}, nil, nil)
 }
 
 // NewRouterWithConfig creates a new Gin router with configuration
@@ -41,6 +41,8 @@ func NewRouterWithConfig(
 	monitoringHandler *MonitoringHandler,
 	sessionManager *auth.SessionManager,
 	cfg RouterConfig,
+	providerHandler *ProviderHandler,
+	miningHandler *MiningHandler,
 ) *gin.Engine {
 	router := gin.Default()
 
@@ -110,6 +112,23 @@ func NewRouterWithConfig(
 			// Balance endpoint (04-06)
 			if balanceHandler != nil {
 				protected.GET("/balance", balanceHandler.GetBalance)
+			}
+
+			// Provider endpoints (Phase 3)
+			if providerHandler != nil {
+				providers := protected.Group("/providers")
+				{
+					providers.POST("/k8s", providerHandler.RegisterK8sProvider)
+				}
+			}
+
+			// Mining endpoints (Phase 3)
+			if miningHandler != nil {
+				protected.POST("/providers/:id/mining/start", miningHandler.StartMining)
+				protected.POST("/providers/:id/mining/stop", miningHandler.StopMining)
+				protected.POST("/providers/:id/mining/allocate", miningHandler.AllocateMiningGPU)
+				protected.POST("/providers/:id/mining/release", miningHandler.ReleaseMiningGPU)
+				protected.GET("/providers/:id/mining", miningHandler.GetMiningStatus)
 			}
 
 			// Monitoring endpoints (Phase 23)

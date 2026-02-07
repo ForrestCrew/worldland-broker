@@ -12,6 +12,7 @@ import (
 
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/k8s"
+	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
 // cleanConfirmPriceString removes decimal points from price strings for BigInt compatibility
@@ -43,12 +44,13 @@ type ConfirmResponse struct {
 
 // ConfirmationHandler handles rental confirmation HTTP requests
 type ConfirmationHandler struct {
-	sessionRepo  domain.RentalSessionRepository
-	providerRepo domain.ProviderRepository
-	nodeRepo     domain.NodeRepository
-	jobManager   *k8s.JobManager       // Can be nil if K8s disabled
-	tenantOrch   *k8s.TenantOrchestrator // Can be nil if K8s disabled
-	logger       *slog.Logger
+	sessionRepo    domain.RentalSessionRepository
+	providerRepo   domain.ProviderRepository
+	nodeRepo       domain.NodeRepository
+	jobManager     *k8s.JobManager            // Can be nil if K8s disabled (legacy)
+	tenantOrch     *k8s.TenantOrchestrator     // Can be nil if K8s disabled (legacy)
+	executorRouter *sessions.ExecutorRouter     // Phase 3: provider-type-aware (can be nil)
+	logger         *slog.Logger
 }
 
 // NewConfirmationHandler creates a new confirmation handler
@@ -76,6 +78,12 @@ func (h *ConfirmationHandler) WithK8sFull(jobManager *k8s.JobManager, tenantOrch
 	h.jobManager = jobManager
 	h.tenantOrch = tenantOrch
 	h.nodeRepo = nodeRepo
+	return h
+}
+
+// WithExecutorRouter sets the ExecutorRouter for provider-type-aware operations (Phase 3)
+func (h *ConfirmationHandler) WithExecutorRouter(router *sessions.ExecutorRouter) *ConfirmationHandler {
+	h.executorRouter = router
 	return h
 }
 
@@ -290,22 +298,37 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 		resp.EndTime = &t
 	}
 
-	// If RUNNING, include SSH credentials from K8s (Phase 22)
-	if session.State == domain.RentalStateRunning && h.jobManager != nil {
-		sshInfo, err := h.jobManager.GetSSHConnectionInfo(
-			c.Request.Context(),
-			session.UserAddress,
-			session.ID,
-		)
-		if err != nil {
-			// Log but don't fail - SSH info might not be ready yet
-			h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
-		} else {
-			resp.SSHHost = sshInfo.Host
-			resp.SSHPort = int(sshInfo.Port)
-			resp.SSHUser = "user"
-			resp.SSHPassword = sshInfo.Password
-			resp.SSHCommand = fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
+	// If RUNNING, include SSH credentials (Phase 3: provider-type aware)
+	if session.State == domain.RentalStateRunning {
+		if h.executorRouter != nil {
+			sshInfo, err := h.executorRouter.GetSSHConnectionInfo(c.Request.Context(), session)
+			if err != nil {
+				h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
+			} else {
+				resp.SSHHost = sshInfo.Host
+				resp.SSHPort = int(sshInfo.Port)
+				resp.SSHUser = sshInfo.User
+				if resp.SSHUser == "" {
+					resp.SSHUser = "user"
+				}
+				resp.SSHPassword = sshInfo.Password
+				resp.SSHCommand = fmt.Sprintf("ssh %s@%s -p %d", resp.SSHUser, sshInfo.Host, sshInfo.Port)
+			}
+		} else if h.jobManager != nil {
+			sshInfo, err := h.jobManager.GetSSHConnectionInfo(
+				c.Request.Context(),
+				session.UserAddress,
+				session.ID,
+			)
+			if err != nil {
+				h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
+			} else {
+				resp.SSHHost = sshInfo.Host
+				resp.SSHPort = int(sshInfo.Port)
+				resp.SSHUser = "user"
+				resp.SSHPassword = sshInfo.Password
+				resp.SSHCommand = fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
+			}
 		}
 	}
 

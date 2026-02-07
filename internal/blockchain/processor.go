@@ -25,7 +25,8 @@ type SessionTransitioner interface {
 type EventProcessor struct {
 	sessionManager SessionTransitioner
 	sessionRepo    domain.RentalSessionRepository
-	jobManager     *k8s.JobManager // K8s job manager for Pod cleanup (can be nil)
+	jobManager     *k8s.JobManager      // K8s job manager for Pod cleanup (can be nil, legacy)
+	cleanup        domain.SessionCleanup // Phase 3: provider-type-aware cleanup (can be nil)
 	logger         *slog.Logger
 }
 
@@ -45,9 +46,15 @@ func NewEventProcessor(
 	}
 }
 
-// WithK8s sets the K8s JobManager for Pod cleanup on rental stop
+// WithK8s sets the K8s JobManager for Pod cleanup on rental stop (legacy)
 func (p *EventProcessor) WithK8s(jobManager *k8s.JobManager) *EventProcessor {
 	p.jobManager = jobManager
+	return p
+}
+
+// WithCleanup sets the provider-type-aware session cleanup (Phase 3)
+func (p *EventProcessor) WithCleanup(cleanup domain.SessionCleanup) *EventProcessor {
+	p.cleanup = cleanup
 	return p
 }
 
@@ -114,14 +121,25 @@ func (p *EventProcessor) HandleRentalStopped(ctx context.Context, event *RentalS
 		"cost", event.Cost.String(),
 	)
 
-	// Delete K8s Pod (idempotent - ok if already deleted)
-	if p.jobManager != nil {
+	// Phase 3: Delete container via provider-type-aware cleanup
+	if p.cleanup != nil {
+		if err := p.cleanup.DeleteSessionContainer(ctx, session); err != nil {
+			p.logger.Warn("failed to delete container on rental stop",
+				"sessionId", session.ID,
+				"error", err,
+			)
+		} else {
+			p.logger.Info("deleted container on rental stop",
+				"sessionId", session.ID,
+			)
+		}
+	} else if p.jobManager != nil {
+		// Legacy: Delete K8s Pod (idempotent - ok if already deleted)
 		if err := p.jobManager.DeleteGPUSession(ctx, session.UserAddress, session.ID); err != nil {
 			p.logger.Warn("failed to delete K8s pod on rental stop",
 				"sessionId", session.ID,
 				"error", err,
 			)
-			// Don't return error - session is already STOPPED, pod cleanup is best-effort
 		} else {
 			p.logger.Info("deleted K8s pod on rental stop",
 				"sessionId", session.ID,

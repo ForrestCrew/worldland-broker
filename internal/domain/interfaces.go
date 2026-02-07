@@ -11,6 +11,7 @@ type ProviderRepository interface {
 	GetByID(ctx context.Context, id string) (*Provider, error)
 	GetByWallet(ctx context.Context, walletAddress string) (*Provider, error)
 	Update(ctx context.Context, provider *Provider) error
+	ListByType(ctx context.Context, providerType ProviderType) ([]*Provider, error)
 }
 
 // NodeRepository defines the interface for node persistence

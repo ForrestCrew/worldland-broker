@@ -220,6 +220,10 @@ func (m *mockConfirmationProviderRepo) Update(ctx context.Context, provider *dom
 	return nil
 }
 
+func (m *mockConfirmationProviderRepo) ListByType(ctx context.Context, providerType domain.ProviderType) ([]*domain.Provider, error) {
+	return nil, nil
+}
+
 type mockConfirmationNodeClient struct {
 	startRentalResp *rental.StartRentalResponse
 	startRentalErr  error

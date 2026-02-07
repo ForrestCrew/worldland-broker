@@ -30,10 +30,12 @@ type ConfirmationWorker struct {
 	nodeRepo    domain.NodeRepository
 	interval    time.Duration
 	logger      *slog.Logger
-	// NEW: K8s integration
+	// NEW: K8s integration (legacy, kept for backward compat)
 	jobManager   *k8s.JobManager
 	tenantOrch   *k8s.TenantOrchestrator
 	defaultImage string // Default container image for GPU sessions
+	// Phase 3: ExecutorRouter for provider-type branching
+	executorRouter *ExecutorRouter
 }
 
 // NewConfirmationWorker creates a new background worker for processing pending confirmations.
@@ -65,13 +67,19 @@ func NewConfirmationWorker(
 	}
 }
 
-// WithK8s configures K8s integration for Pod creation on confirmation
+// WithK8s configures K8s integration for Pod creation on confirmation (legacy)
 func (w *ConfirmationWorker) WithK8s(jobManager *k8s.JobManager, tenantOrch *k8s.TenantOrchestrator, defaultImage string) *ConfirmationWorker {
 	w.jobManager = jobManager
 	w.tenantOrch = tenantOrch
 	if defaultImage != "" {
 		w.defaultImage = defaultImage
 	}
+	return w
+}
+
+// WithExecutorRouter configures the executor router for provider-type branching (Phase 3)
+func (w *ConfirmationWorker) WithExecutorRouter(router *ExecutorRouter) *ConfirmationWorker {
+	w.executorRouter = router
 	return w
 }
 
@@ -234,6 +242,12 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 		containerImage = w.defaultImage
 	}
 
+	// Phase 3: Use ExecutorRouter if available (provider-type branching)
+	if w.executorRouter != nil {
+		w.handleConfirmedWithRouter(ctx, session, result, node, containerImage)
+		return
+	}
+
 	// K8s-based provisioning (primary path when K8s is enabled)
 	if w.jobManager != nil {
 		// Ensure tenant namespace exists
@@ -321,16 +335,12 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 	}
 
 	// Call node to start the rental container
-	// Note: For automatic confirmation flow, we use a default SSH key placeholder
-	// The actual SSH key should be provided through a separate mechanism or stored earlier
 	nodeReq := rental.StartRentalRequest{
 		SessionID:   session.ID,
 		GPUDeviceID: node.GPUUUID,
-		Image:       containerImage,         // 24-03: Use session.DockerImage
+		Image:       containerImage,
 		MemoryBytes: 8 * 1024 * 1024 * 1024, // 8GB default
-		CPUCount:    4,                      // 4 CPUs default
-		// Note: SSHPublicKey would come from session data or a separate user profile
-		// For now, the node can generate a key pair if needed
+		CPUCount:    4,
 	}
 
 	nodeResp, err := w.nodeClient.StartRental(ctx, node.APIEndpoint, nodeReq)
@@ -374,9 +384,88 @@ func (w *ConfirmationWorker) handleConfirmedTransaction(
 		"sessionId", session.ID,
 		"rentalId", result.RentalID,
 	)
+}
 
-	// TODO: Store SSH credentials in session or cache for GetSession to return
-	// This would require adding SSHCredentials to the session model or a separate cache
+// handleConfirmedWithRouter uses the ExecutorRouter for provider-type-aware provisioning
+func (w *ConfirmationWorker) handleConfirmedWithRouter(
+	ctx context.Context,
+	session *domain.RentalSession,
+	result blockchain.VerificationResult,
+	node *domain.Node,
+	containerImage string,
+) {
+	executor, err := w.executorRouter.GetExecutorForSession(ctx, session)
+	if err != nil {
+		w.logger.Error("failed to get executor for session",
+			"sessionId", session.ID,
+			"error", err,
+		)
+		if err := w.manager.TransitionToFailed(ctx, session.ID, "no executor available: "+err.Error()); err != nil {
+			w.logger.Error("failed to transition to FAILED", "error", err)
+		}
+		return
+	}
+
+	// Determine GPU count
+	gpuCount := 1
+	if node.GPUType == "CPU Node" {
+		gpuCount = 0
+	}
+
+	spec := domain.JobSpec{
+		SessionID:     session.ID,
+		UserAddress:   session.UserAddress,
+		ProviderID:    node.ProviderID,
+		NodeID:        node.ID,
+		GPUCount:      gpuCount,
+		GPUModel:      node.GPUType,
+		GPUDeviceID:   node.GPUUUID,
+		Image:         containerImage,
+		CPURequest:    "2",
+		MemoryRequest: "4Gi",
+		CPULimit:      "4",
+		MemoryLimit:   "8Gi",
+	}
+
+	password, err := executor.CreateGPUSession(ctx, spec)
+	if err != nil {
+		w.logger.Error("failed to create GPU session",
+			"sessionId", session.ID,
+			"image", containerImage,
+			"error", err,
+		)
+		if err := w.manager.TransitionToFailed(ctx, session.ID, "failed to create GPU session: "+err.Error()); err != nil {
+			w.logger.Error("failed to transition to FAILED", "error", err)
+		}
+		return
+	}
+
+	w.logger.Info("created GPU session via executor router",
+		"sessionId", session.ID,
+		"image", containerImage,
+	)
+	_ = password
+
+	// Transition to RUNNING
+	if err := w.manager.TransitionToRunning(
+		ctx,
+		session.ID,
+		result.RentalID,
+		result.BlockNumber,
+		*session.TxHash,
+		result.StartTime,
+	); err != nil {
+		w.logger.Error("failed to transition to RUNNING",
+			"sessionId", session.ID,
+			"error", err,
+		)
+		return
+	}
+
+	w.logger.Info("session transitioned to RUNNING (executor router)",
+		"sessionId", session.ID,
+		"rentalId", result.RentalID,
+	)
 }
 
 // ProcessOnce runs a single confirmation check (useful for testing)

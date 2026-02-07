@@ -255,6 +255,10 @@ func (m *rentalMockProviderRepo) Update(ctx context.Context, provider *domain.Pr
 	return nil
 }
 
+func (m *rentalMockProviderRepo) ListByType(ctx context.Context, providerType domain.ProviderType) ([]*domain.Provider, error) {
+	return nil, nil
+}
+
 // Mock NodeClient for testing
 type mockNodeClient struct {
 	startRentalResp *rental.StartRentalResponse

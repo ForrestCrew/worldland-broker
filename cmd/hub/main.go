@@ -31,6 +31,7 @@ import (
 	"github.com/worldland/worldland-hub/internal/domain"
 	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
+	"github.com/worldland/worldland-hub/internal/mining"
 	"github.com/worldland/worldland-hub/internal/monitoring"
 	"github.com/worldland/worldland-hub/internal/remote"
 	"github.com/worldland/worldland-hub/internal/rental"
@@ -298,6 +299,72 @@ func main() {
 		logger.Info("Monitoring service initialized")
 	}
 
+	// Initialize mTLS server for node connections
+	mtlsServer, err := initMTLSServer(cfg, certService, logger)
+	if err != nil {
+		logger.Error("Failed to initialize mTLS server", "error", err)
+		os.Exit(1)
+	}
+
+	// Initialize Remote JobManager for Docker-based providers (V3)
+	remoteJobManager := remote.NewJobManager(mtlsServer, logger)
+
+	// Phase 3: Initialize ExternalClusterRegistry and ExecutorRouter
+	clusterRegistry := k8s.NewExternalClusterRegistry(logger)
+	var executorRouter *sessions.ExecutorRouter
+	var providerHandler *httpAdapter.ProviderHandler
+	var miningHandler *httpAdapter.MiningHandler
+
+	if cfg.ExternalProvidersEnabled {
+		// Load K8s providers from DB and register their clusters
+		k8sProviders, err := providerRepo.ListByType(ctx, domain.ProviderTypeK8s)
+		if err != nil {
+			logger.Warn("Failed to load K8s providers", "error", err)
+		} else {
+			for _, p := range k8sProviders {
+				if p.KubeconfigData != nil && *p.KubeconfigData != "" {
+					if err := clusterRegistry.RegisterCluster(p.ID, []byte(*p.KubeconfigData)); err != nil {
+						logger.Warn("Failed to register K8s cluster for provider",
+							"providerID", p.ID,
+							"error", err,
+						)
+					}
+				}
+			}
+			logger.Info("Loaded external K8s providers", "count", len(k8sProviders))
+		}
+
+		// Create executor adapters
+		dockerExecutor := remote.NewRemoteJobExecutor(remoteJobManager, nodeRepo, logger)
+		k8sExecutor := k8s.NewK8sJobExecutor(clusterRegistry, logger, cfg.K8s.DefaultImage)
+
+		// Create ExecutorRouter
+		executorRouter = sessions.NewExecutorRouter(
+			providerRepo, nodeRepo, dockerExecutor, k8sExecutor, logger,
+		)
+
+		// Wire ExecutorRouter to event processor
+		eventProcessor.WithCleanup(executorRouter)
+
+		// Wire ExecutorRouter to handlers
+		rentalHandler = rentalHandler.WithExecutorRouter(executorRouter)
+		confirmationHandler = confirmationHandler.WithExecutorRouter(executorRouter)
+
+		// Create provider handler for K8s provider registration
+		providerHandler = httpAdapter.NewProviderHandler(providerRepo, clusterRegistry, logger)
+
+		// Create mining handler
+		miningManager := mining.NewK8sMiningManager(clusterRegistry, providerRepo, logger)
+		gpuPool := mining.NewGPUPool()
+		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger)
+
+		logger.Info("Phase 3: External providers enabled",
+			"k8sClusters", len(clusterRegistry.ListProviderIDs()),
+		)
+	} else {
+		logger.Info("Phase 3: External providers disabled")
+	}
+
 	// Create router with configuration
 	routerCfg := httpAdapter.RouterConfig{
 		AuthDisabled: cfg.AuthDisabled,
@@ -306,7 +373,7 @@ func main() {
 	if cfg.AuthDisabled {
 		logger.Warn("AUTH_DISABLED is true - authentication is bypassed (for E2E testing only)")
 	}
-	router := httpAdapter.NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, routerCfg)
+	router := httpAdapter.NewRouterWithConfig(authHandler, nodeHandler, certHandler, rentalHandler, confirmationHandler, balanceHandler, historyHandler, monitoringHandler, sessionManager, routerCfg, providerHandler, miningHandler)
 
 	// Start HTTP server
 	httpServer := &http.Server{
@@ -321,16 +388,6 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-
-	// Initialize mTLS server for node connections
-	mtlsServer, err := initMTLSServer(cfg, certService, logger)
-	if err != nil {
-		logger.Error("Failed to initialize mTLS server", "error", err)
-		os.Exit(1)
-	}
-
-	// Initialize Remote JobManager for Docker-based providers (V3)
-	remoteJobManager := remote.NewJobManager(mtlsServer, logger)
 
 	// Wire CommandAck response handler - Hub processes node responses
 	// Remote JobManager handles command acks and container state updates
@@ -428,8 +485,11 @@ func main() {
 			logger,
 		)
 
-		// Wire K8s integration if enabled (Phase 22)
-		if jobManager != nil && tenantOrch != nil {
+		// Phase 3: Wire ExecutorRouter if available
+		if executorRouter != nil {
+			confirmationWorker = confirmationWorker.WithExecutorRouter(executorRouter)
+		} else if jobManager != nil && tenantOrch != nil {
+			// Legacy: Wire K8s integration if enabled (Phase 22)
 			confirmationWorker = confirmationWorker.WithK8s(jobManager, tenantOrch, cfg.K8s.DefaultImage)
 		}
 
@@ -452,6 +512,10 @@ func main() {
 		nodeRepo,
 		logger,
 	)
+	// Phase 3: Wire ExecutorRouter if available
+	if executorRouter != nil {
+		expirationWorker = expirationWorker.WithExecutorRouter(executorRouter)
+	}
 	go func() {
 		logger.Info("Starting expiration worker")
 		if err := expirationWorker.Start(ctx); err != nil && err != context.Canceled {

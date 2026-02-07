@@ -1,0 +1,155 @@
+package http
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/worldland/worldland-hub/internal/mining"
+)
+
+// MiningHandler handles mining-related HTTP requests for K8s providers
+type MiningHandler struct {
+	miningManager *mining.K8sMiningManager
+	gpuPool       *mining.GPUPool
+	logger        *slog.Logger
+}
+
+// NewMiningHandler creates a new mining handler
+func NewMiningHandler(
+	miningManager *mining.K8sMiningManager,
+	gpuPool *mining.GPUPool,
+	logger *slog.Logger,
+) *MiningHandler {
+	return &MiningHandler{
+		miningManager: miningManager,
+		gpuPool:       gpuPool,
+		logger:        logger,
+	}
+}
+
+// StartMiningRequest represents a mining start request
+type StartMiningRequest struct {
+	GPUCount int    `json:"gpuCount"`
+	Image    string `json:"image,omitempty"`
+}
+
+// StartMining handles POST /api/v1/providers/:id/mining/start
+func (h *MiningHandler) StartMining(c *gin.Context) {
+	providerID := c.Param("id")
+
+	var req StartMiningRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Use defaults
+		req.GPUCount = 1
+	}
+
+	config := mining.MiningConfig{
+		GPUCount: req.GPUCount,
+		Image:    req.Image,
+	}
+
+	if err := h.miningManager.DeployMiningPod(c.Request.Context(), providerID, config); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "failed to start mining",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Mining started",
+		"gpuCount": req.GPUCount,
+	})
+}
+
+// StopMining handles POST /api/v1/providers/:id/mining/stop
+func (h *MiningHandler) StopMining(c *gin.Context) {
+	providerID := c.Param("id")
+
+	if err := h.miningManager.DeleteMiningPod(c.Request.Context(), providerID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "failed to stop mining",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Mining stopped"})
+}
+
+// GetMiningStatus handles GET /api/v1/providers/:id/mining
+func (h *MiningHandler) GetMiningStatus(c *gin.Context) {
+	providerID := c.Param("id")
+
+	status, err := h.miningManager.GetMiningStatus(c.Request.Context(), providerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "failed to get mining status",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Include GPU pool allocation
+	allocation := h.gpuPool.GetAllocation(providerID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"mining":     status,
+		"allocation": allocation,
+	})
+}
+
+// AllocateGPURequest represents a GPU allocation request
+type AllocateGPURequest struct {
+	GPUCount int `json:"gpuCount" binding:"required"`
+}
+
+// AllocateMiningGPU handles POST /api/v1/providers/:id/mining/allocate
+func (h *MiningHandler) AllocateMiningGPU(c *gin.Context) {
+	providerID := c.Param("id")
+
+	var req AllocateGPURequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gpuCount required"})
+		return
+	}
+
+	if err := h.gpuPool.AllocateMining(providerID, req.GPUCount); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "failed to allocate GPUs for mining",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "GPUs allocated for mining",
+		"allocation": h.gpuPool.GetAllocation(providerID),
+	})
+}
+
+// ReleaseMiningGPU handles POST /api/v1/providers/:id/mining/release
+func (h *MiningHandler) ReleaseMiningGPU(c *gin.Context) {
+	providerID := c.Param("id")
+
+	var req AllocateGPURequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gpuCount required"})
+		return
+	}
+
+	if err := h.gpuPool.ReleaseMining(providerID, req.GPUCount); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "failed to release mining GPUs",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "Mining GPUs released",
+		"allocation": h.gpuPool.GetAllocation(providerID),
+	})
+}
