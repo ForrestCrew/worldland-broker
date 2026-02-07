@@ -101,6 +101,10 @@ func (m *MockStaleSessionRepo) CreateExtensionRecord(ctx context.Context, sessio
 	return "", nil
 }
 
+func (m *MockStaleSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+
 // MockSessionFailer implements SessionFailer for testing
 type MockSessionFailer struct {
 	mock.Mock
@@ -137,7 +141,7 @@ func testLogger() *slog.Logger {
 func TestTimeoutEnforcer_Constants(t *testing.T) {
 	// Verify timeout constants match Phase 14 CONTEXT.md requirements
 	assert.Equal(t, 10*time.Minute, PendingTimeout, "PendingTimeout should be 10 minutes per Phase 14")
-	assert.Equal(t, 3*time.Minute, RunningTimeout, "RunningTimeout should be 3 minutes to allow large image pulls")
+	assert.Equal(t, 24*time.Hour, RunningTimeout, "RunningTimeout should be 24 hours for heartbeat-based monitoring")
 	assert.Equal(t, 1*time.Minute, DefaultCheckInterval, "DefaultCheckInterval should be 1 minute per Phase 14")
 }
 

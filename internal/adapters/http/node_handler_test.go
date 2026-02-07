@@ -176,7 +176,7 @@ func TestRegisterNode_ValidRequest_Returns201(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(t, err)
 	assert.NotEmpty(t, response["node_id"])
-	assert.Equal(t, "pending", response["status"])
+	assert.Equal(t, "active", response["status"])
 }
 
 func TestRegisterNode_InvalidMemory_Returns400(t *testing.T) {

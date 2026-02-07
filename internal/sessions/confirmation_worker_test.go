@@ -136,6 +136,13 @@ func (m *mockConfirmationSessionRepo) CreateExtensionRecord(ctx context.Context,
 	return "", nil
 }
 
+func (m *mockConfirmationSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	if _, ok := m.sessions[sessionID]; !ok {
+		return errors.New("session not found")
+	}
+	return nil
+}
+
 type mockConfirmationNodeRepo struct {
 	nodes map[string]*domain.Node
 }

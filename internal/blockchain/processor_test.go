@@ -187,26 +187,17 @@ func testLogger() *slog.Logger {
 // ============================================================================
 // HandleRentalStarted Tests
 // ============================================================================
+// NOTE: HandleRentalStarted is now a no-op that just logs the event.
+// ConfirmationWorker handles the actual PENDING → RUNNING transition
+// after verifying the txHash and creating the K8s/Docker container.
 
-func TestHandleRentalStarted_TransitionsPendingToRunning(t *testing.T) {
+func TestHandleRentalStarted_IsNoOp(t *testing.T) {
 	ctx := context.Background()
 	mockManager := new(MockSessionTransitioner)
 	mockRepo := new(MockRentalSessionRepo)
 	logger := testLogger()
 
 	processor := NewEventProcessor(mockManager, mockRepo, logger)
-
-	// Create a pending session
-	pendingSession := &domain.RentalSession{
-		ID:              "session-123",
-		UserAddress:     testUserAddr.Hex(),
-		ProviderAddress: testProviderAddr.Hex(),
-		State:           domain.RentalStatePending,
-	}
-
-	// Setup mock expectations
-	mockRepo.On("ListByUser", ctx, testUserAddr.Hex(), 10, 0).Return([]*domain.RentalSession{pendingSession}, nil)
-	mockManager.On("TransitionToRunning", ctx, "session-123", uint64(42), uint64(12345), testTxHash.Hex(), mock.AnythingOfType("time.Time")).Return(nil)
 
 	event := &RentalStartedEvent{
 		RentalID:    42,
@@ -217,146 +208,13 @@ func TestHandleRentalStarted_TransitionsPendingToRunning(t *testing.T) {
 		TxHash:      testTxHash,
 	}
 
+	// HandleRentalStarted should just log and return nil
 	err := processor.HandleRentalStarted(ctx, event)
 	require.NoError(t, err)
 
-	mockRepo.AssertExpectations(t)
-	mockManager.AssertExpectations(t)
-}
-
-func TestHandleRentalStarted_NoPendingSession_SkipsGracefully(t *testing.T) {
-	ctx := context.Background()
-	mockManager := new(MockSessionTransitioner)
-	mockRepo := new(MockRentalSessionRepo)
-	logger := testLogger()
-
-	processor := NewEventProcessor(mockManager, mockRepo, logger)
-
-	// Return empty list - no pending sessions
-	mockRepo.On("ListByUser", ctx, testUserAddr.Hex(), 10, 0).Return([]*domain.RentalSession{}, nil)
-
-	event := &RentalStartedEvent{
-		RentalID:    42,
-		User:        testUserAddr,
-		Provider:    testProviderAddr,
-		StartTime:   1706500000,
-		BlockNumber: 12345,
-		TxHash:      testTxHash,
-	}
-
-	// HandleRentalStarted should return nil (no error) even when no session found
-	err := processor.HandleRentalStarted(ctx, event)
-	assert.NoError(t, err)
-
-	mockRepo.AssertExpectations(t)
-	// TransitionToRunning should NOT be called
+	// No repo or manager calls should be made
+	mockRepo.AssertNotCalled(t, "ListByUser")
 	mockManager.AssertNotCalled(t, "TransitionToRunning")
-}
-
-func TestHandleRentalStarted_WrongProvider_SkipsGracefully(t *testing.T) {
-	ctx := context.Background()
-	mockManager := new(MockSessionTransitioner)
-	mockRepo := new(MockRentalSessionRepo)
-	logger := testLogger()
-
-	processor := NewEventProcessor(mockManager, mockRepo, logger)
-
-	// Create a pending session with different provider
-	differentProvider := common.HexToAddress("0x9999999999999999999999999999999999999999")
-	pendingSession := &domain.RentalSession{
-		ID:              "session-123",
-		UserAddress:     testUserAddr.Hex(),
-		ProviderAddress: differentProvider.Hex(), // Different provider
-		State:           domain.RentalStatePending,
-	}
-
-	mockRepo.On("ListByUser", ctx, testUserAddr.Hex(), 10, 0).Return([]*domain.RentalSession{pendingSession}, nil)
-
-	event := &RentalStartedEvent{
-		RentalID:    42,
-		User:        testUserAddr,
-		Provider:    testProviderAddr, // Provider doesn't match session
-		StartTime:   1706500000,
-		BlockNumber: 12345,
-		TxHash:      testTxHash,
-	}
-
-	// Should return nil (skip gracefully) since no matching session found
-	err := processor.HandleRentalStarted(ctx, event)
-	assert.NoError(t, err)
-
-	mockRepo.AssertExpectations(t)
-	mockManager.AssertNotCalled(t, "TransitionToRunning")
-}
-
-func TestHandleRentalStarted_SessionNotPending_SkipsGracefully(t *testing.T) {
-	ctx := context.Background()
-	mockManager := new(MockSessionTransitioner)
-	mockRepo := new(MockRentalSessionRepo)
-	logger := testLogger()
-
-	processor := NewEventProcessor(mockManager, mockRepo, logger)
-
-	// Create a session that's already RUNNING (not PENDING)
-	runningSession := &domain.RentalSession{
-		ID:              "session-123",
-		UserAddress:     testUserAddr.Hex(),
-		ProviderAddress: testProviderAddr.Hex(),
-		State:           domain.RentalStateRunning, // Already running
-	}
-
-	mockRepo.On("ListByUser", ctx, testUserAddr.Hex(), 10, 0).Return([]*domain.RentalSession{runningSession}, nil)
-
-	event := &RentalStartedEvent{
-		RentalID:    42,
-		User:        testUserAddr,
-		Provider:    testProviderAddr,
-		StartTime:   1706500000,
-		BlockNumber: 12345,
-		TxHash:      testTxHash,
-	}
-
-	// Should skip since session is not in PENDING state
-	err := processor.HandleRentalStarted(ctx, event)
-	assert.NoError(t, err)
-
-	mockRepo.AssertExpectations(t)
-	mockManager.AssertNotCalled(t, "TransitionToRunning")
-}
-
-func TestHandleRentalStarted_TransitionError_ReturnsError(t *testing.T) {
-	ctx := context.Background()
-	mockManager := new(MockSessionTransitioner)
-	mockRepo := new(MockRentalSessionRepo)
-	logger := testLogger()
-
-	processor := NewEventProcessor(mockManager, mockRepo, logger)
-
-	pendingSession := &domain.RentalSession{
-		ID:              "session-123",
-		UserAddress:     testUserAddr.Hex(),
-		ProviderAddress: testProviderAddr.Hex(),
-		State:           domain.RentalStatePending,
-	}
-
-	mockRepo.On("ListByUser", ctx, testUserAddr.Hex(), 10, 0).Return([]*domain.RentalSession{pendingSession}, nil)
-	mockManager.On("TransitionToRunning", ctx, "session-123", uint64(42), uint64(12345), testTxHash.Hex(), mock.AnythingOfType("time.Time")).Return(errors.New("transition failed"))
-
-	event := &RentalStartedEvent{
-		RentalID:    42,
-		User:        testUserAddr,
-		Provider:    testProviderAddr,
-		StartTime:   1706500000,
-		BlockNumber: 12345,
-		TxHash:      testTxHash,
-	}
-
-	err := processor.HandleRentalStarted(ctx, event)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "transition to running")
-
-	mockRepo.AssertExpectations(t)
-	mockManager.AssertExpectations(t)
 }
 
 // ============================================================================

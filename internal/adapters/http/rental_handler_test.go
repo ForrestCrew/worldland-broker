@@ -352,13 +352,13 @@ func TestFindProviders_ReturnsMatchingNodes(t *testing.T) {
 	assert.Equal(t, 2, int(resp["totalCount"].(float64)))
 }
 
-func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
+func TestFindProviders_MissingGPUType_ReturnsEmptyResults(t *testing.T) {
 	nodeLister := &rentalMockNodeLister{nodes: []*domain.Node{}}
 	matcher := matching.NewProviderMatcher(nodeLister)
 	handler := httpAdapter.NewRentalHandler(matcher, nil, nil, nil, nil, nil, nil)
 	router := setupRentalTestRouter(handler, "")
 
-	// Missing required gpuType field
+	// GPUType is optional - returns empty results when no match
 	reqBody := map[string]interface{}{
 		"minMemoryGb": 24,
 	}
@@ -369,7 +369,7 @@ func TestFindProviders_MissingGPUType_Returns400(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, nethttp.StatusBadRequest, w.Code)
+	assert.Equal(t, nethttp.StatusOK, w.Code)
 }
 
 func TestCreateSession_AuthRequired(t *testing.T) {
@@ -623,7 +623,7 @@ func TestHandleStartRental_Success(t *testing.T) {
 		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
 		ProviderAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
 		NodeID:          "node-1",
-		State:           domain.RentalStatePending,
+		State:           domain.RentalStateRunning, // Must be RUNNING (ConfirmationWorker provisions first)
 		PricePerSecond:  "1000000000000000",
 		CreatedAt:       time.Now(),
 	}
@@ -746,7 +746,7 @@ func TestHandleStartRental_NodeUnreachable_Returns502(t *testing.T) {
 		ID:              "session-1",
 		UserAddress:     "0x1234567890abcdef1234567890abcdef12345678",
 		NodeID:          "node-1",
-		State:           domain.RentalStatePending,
+		State:           domain.RentalStateRunning, // Must be RUNNING to reach node client
 		CreatedAt:       time.Now(),
 	}
 

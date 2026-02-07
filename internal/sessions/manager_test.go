@@ -139,6 +139,13 @@ func (m *mockRentalSessionRepo) CreateExtensionRecord(ctx context.Context, sessi
 	return "ext-record-id", nil
 }
 
+func (m *mockRentalSessionRepo) TouchSession(ctx context.Context, sessionID string) error {
+	if _, ok := m.sessions[sessionID]; !ok {
+		return errors.New("session not found")
+	}
+	return nil
+}
+
 // mockNodeRepo is a mock implementation of NodeRepository
 type mockNodeRepo struct {
 	nodes map[string]*domain.Node
