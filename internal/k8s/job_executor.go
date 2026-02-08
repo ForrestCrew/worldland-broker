@@ -14,6 +14,7 @@ import (
 // based on providerID via ExternalClusterRegistry.
 type K8sJobExecutor struct {
 	clusterRegistry *ExternalClusterRegistry
+	nodeRepo        domain.NodeRepository
 	logger          *slog.Logger
 	defaultImage    string
 }
@@ -29,6 +30,12 @@ func NewK8sJobExecutor(
 		logger:          logger,
 		defaultImage:    defaultImage,
 	}
+}
+
+// WithNodeRepo sets the node repository for provider ID lookups
+func (e *K8sJobExecutor) WithNodeRepo(nodeRepo domain.NodeRepository) *K8sJobExecutor {
+	e.nodeRepo = nodeRepo
+	return e
 }
 
 // Compile-time interface check
@@ -97,7 +104,7 @@ func (e *K8sJobExecutor) CreateGPUSession(ctx context.Context, spec domain.JobSp
 
 // DeleteGPUSession deletes a GPU Pod from the provider's K8s cluster
 func (e *K8sJobExecutor) DeleteGPUSession(ctx context.Context, session *domain.RentalSession) error {
-	providerID := e.getProviderID(session)
+	providerID := e.getProviderID(ctx, session)
 	client := e.clusterRegistry.GetClient(providerID)
 	if client == nil {
 		e.logger.Warn("no K8s cluster for provider, skipping delete",
@@ -113,7 +120,7 @@ func (e *K8sJobExecutor) DeleteGPUSession(ctx context.Context, session *domain.R
 
 // GetSSHConnectionInfo retrieves SSH connection details from the K8s cluster
 func (e *K8sJobExecutor) GetSSHConnectionInfo(ctx context.Context, session *domain.RentalSession) (*domain.SSHConnectionInfo, error) {
-	providerID := e.getProviderID(session)
+	providerID := e.getProviderID(ctx, session)
 	client := e.clusterRegistry.GetClient(providerID)
 	if client == nil {
 		return nil, fmt.Errorf("no K8s cluster registered for provider %s", providerID)
@@ -133,12 +140,19 @@ func (e *K8sJobExecutor) GetSSHConnectionInfo(ctx context.Context, session *doma
 	}, nil
 }
 
-// getProviderID extracts provider ID from session by looking up via node
-// For K8s sessions, the NodeID field is used to find the provider
-func (e *K8sJobExecutor) getProviderID(session *domain.RentalSession) string {
-	// The NodeID in the session refers to the provider's node registration
-	// For K8s providers, the provider_id on the node links back to the provider
-	// Since we can't look up from here, we use a convention:
-	// The ProviderAddress in the session maps to a provider with K8s cluster
-	return session.NodeID // Will be resolved by ExecutorRouter before calling
+// getProviderID looks up the provider ID from the node repository.
+// The session stores NodeID, but the cluster registry uses provider ID as key.
+func (e *K8sJobExecutor) getProviderID(ctx context.Context, session *domain.RentalSession) string {
+	if e.nodeRepo != nil {
+		node, err := e.nodeRepo.GetByID(ctx, session.NodeID)
+		if err == nil && node.ProviderID != "" {
+			return node.ProviderID
+		}
+		e.logger.Warn("failed to look up provider ID from node",
+			"nodeID", session.NodeID,
+			"error", err,
+		)
+	}
+	// Fallback: return NodeID (will likely fail cluster lookup)
+	return session.NodeID
 }

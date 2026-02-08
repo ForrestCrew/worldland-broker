@@ -11,9 +11,10 @@ import (
 // RemoteJobExecutor implements domain.JobExecutor for Docker-based providers.
 // It wraps the existing remote.JobManager for mTLS command-based operations.
 type RemoteJobExecutor struct {
-	jobManager *JobManager
-	nodeRepo   domain.NodeRepository
-	logger     *slog.Logger
+	jobManager   *JobManager
+	nodeRepo     domain.NodeRepository
+	providerRepo domain.ProviderRepository
+	logger       *slog.Logger
 }
 
 // NewRemoteJobExecutor creates a new Docker/remote job executor
@@ -29,15 +30,33 @@ func NewRemoteJobExecutor(
 	}
 }
 
+// WithProviderRepo sets the provider repository for wallet address lookups
+func (e *RemoteJobExecutor) WithProviderRepo(providerRepo domain.ProviderRepository) *RemoteJobExecutor {
+	e.providerRepo = providerRepo
+	return e
+}
+
 // Compile-time interface check
 var _ domain.JobExecutor = (*RemoteJobExecutor)(nil)
 
 // CreateGPUSession sends a start_rental command to the remote node via mTLS
 func (e *RemoteJobExecutor) CreateGPUSession(ctx context.Context, spec domain.JobSpec) (string, error) {
-	// Look up node to get mTLS node ID
+	// Look up node to get provider info
 	node, err := e.nodeRepo.GetByID(ctx, spec.NodeID)
 	if err != nil {
 		return "", fmt.Errorf("failed to lookup node %s: %w", spec.NodeID, err)
+	}
+
+	// Resolve mTLS node ID: the mTLS client map uses wallet address (certificate CN),
+	// not the node UUID. Look up provider's wallet address.
+	mtlsNodeID := node.ID
+	if e.providerRepo != nil {
+		provider, err := e.providerRepo.GetByID(ctx, node.ProviderID)
+		if err == nil && provider != nil {
+			mtlsNodeID = provider.WalletAddress
+			e.logger.Debug("resolved mTLS node ID from provider wallet",
+				"nodeID", node.ID, "walletAddress", mtlsNodeID)
+		}
 	}
 
 	// Convert domain.JobSpec to remote.GPUJobSpec
@@ -45,7 +64,7 @@ func (e *RemoteJobExecutor) CreateGPUSession(ctx context.Context, spec domain.Jo
 		SessionID:     spec.SessionID,
 		UserAddress:   spec.UserAddress,
 		ProviderID:    spec.ProviderID,
-		NodeID:        node.ID, // mTLS identifier
+		NodeID:        mtlsNodeID, // mTLS identifier = wallet address
 		GPUCount:      spec.GPUCount,
 		GPUModel:      spec.GPUModel,
 		GPUDeviceID:   spec.GPUDeviceID,
@@ -75,7 +94,16 @@ func (e *RemoteJobExecutor) DeleteGPUSession(ctx context.Context, session *domai
 		return nil
 	}
 
-	return e.jobManager.DeleteGPUSession(ctx, node.ID, session.ID)
+	// Resolve mTLS node ID (wallet address)
+	mtlsNodeID := node.ID
+	if e.providerRepo != nil {
+		provider, err := e.providerRepo.GetByID(ctx, node.ProviderID)
+		if err == nil && provider != nil {
+			mtlsNodeID = provider.WalletAddress
+		}
+	}
+
+	return e.jobManager.DeleteGPUSession(ctx, mtlsNodeID, session.ID)
 }
 
 // GetSSHConnectionInfo retrieves SSH connection details from in-memory store

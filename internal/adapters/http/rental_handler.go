@@ -99,6 +99,7 @@ type ProviderInfo struct {
 	GPUType         string `json:"gpuType"`
 	VramGB          int    `json:"vramGb"`
 	PricePerSecond  string `json:"pricePerSecond"`
+	PricePerHour    string `json:"pricePerHour"` // Human-readable WLC/hr (e.g., "1.50")
 	Region          string `json:"region"`
 	Status          string `json:"status"`
 }
@@ -291,12 +292,14 @@ type SessionInfo struct {
 	ProviderAddress string  `json:"providerAddress"`
 	State           string  `json:"state"`
 	PricePerSecond  string  `json:"pricePerSecond"`
+	PricePerHour    string  `json:"pricePerHour"` // Human-readable WLC/hr (e.g., "1.50")
 	RentalID        *uint64 `json:"rentalId,omitempty"`
 	StartTime       *string `json:"startTime,omitempty"`
 	EndTime         *string `json:"endTime,omitempty"`
 	CreatedAt       string  `json:"createdAt"`
 	// Settlement info (for STOPPED sessions)
-	SettlementAmount string `json:"settlementAmount,omitempty"`
+	SettlementAmount        string `json:"settlementAmount,omitempty"`
+	SettlementAmountDisplay string `json:"settlementAmountDisplay,omitempty"` // Human-readable WLC
 	// Node info
 	GPUType  string `json:"gpuType,omitempty"`
 	MemoryGB int    `json:"memoryGb,omitempty"`
@@ -463,7 +466,7 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 
 		user := sshInfo.User
 		if user == "" {
-			user = "user"
+			user = "ubuntu"
 		}
 		sshCommand := fmt.Sprintf("ssh %s@%s -p %d", user, sshInfo.Host, sshInfo.Port)
 
@@ -491,13 +494,13 @@ func (h *RentalHandler) HandleStartRental(c *gin.Context) {
 			return
 		}
 
-		sshCommand := fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
+		sshCommand := fmt.Sprintf("ssh ubuntu@%s -p %d", sshInfo.Host, sshInfo.Port)
 
 		c.JSON(http.StatusOK, StartRentalResponse{
 			SessionID:   sessionID,
 			SSHHost:     sshInfo.Host,
 			SSHPort:     int(sshInfo.Port),
-			SSHUser:     "user",
+			SSHUser:     "ubuntu",
 			SSHPassword: sshInfo.Password,
 			SSHCommand:  sshCommand,
 			Message:     "Container ready",
@@ -648,6 +651,7 @@ func (h *RentalHandler) convertNodes(ctx context.Context, nodes []*domain.Node) 
 			GPUType:        n.GPUType,
 			VramGB:         n.MemoryGB,
 			PricePerSecond: cleanPriceString(n.PricePerSecond),
+			PricePerHour:   FormatWeiPerSecToPerHour(n.PricePerSecond),
 			Region:         "asia", // Default region for now
 			Status:         "available",
 		}
@@ -873,6 +877,7 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 			ProviderAddress: s.ProviderAddress,
 			State:           string(s.State),
 			PricePerSecond:  cleanPriceString(s.PricePerSecond),
+			PricePerHour:    FormatWeiPerSecToPerHour(s.PricePerSecond),
 			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
 		}
 		if s.RentalID != nil {
@@ -888,10 +893,9 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 		}
 
 		// Include settlement amount for completed sessions
-		// DEBUG: Log settlement amount
-		fmt.Printf("[DEBUG] Session %s: SettledAmount='%s', State=%s\n", s.ID, s.SettledAmount, s.State)
 		if s.SettledAmount != "" {
 			info.SettlementAmount = cleanPriceString(s.SettledAmount)
+			info.SettlementAmountDisplay = FormatWeiToDisplay(s.SettledAmount)
 		}
 
 		// Lookup node info (GPUType, MemoryGB)
@@ -912,7 +916,7 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 					info.SSHPort = int(sshInfo.Port)
 					info.SSHUser = sshInfo.User
 					if info.SSHUser == "" {
-						info.SSHUser = "user"
+						info.SSHUser = "ubuntu"
 					}
 					info.SSHPassword = sshInfo.Password
 				}
@@ -921,7 +925,7 @@ func (h *RentalHandler) convertSessionsWithDetails(ctx context.Context, sessions
 				if err == nil && sshInfo != nil {
 					info.SSHHost = sshInfo.Host
 					info.SSHPort = int(sshInfo.Port)
-					info.SSHUser = "user"
+					info.SSHUser = "ubuntu"
 					info.SSHPassword = sshInfo.Password
 				}
 			}

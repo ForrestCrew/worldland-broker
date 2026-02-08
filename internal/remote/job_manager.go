@@ -28,15 +28,20 @@ type JobManager struct {
 	// Pending command responses (command ack channel)
 	pendingCmds   map[string]chan *mtls.CommandAck
 	pendingCmdsMu sync.Mutex
+
+	// Mining status from SDK node heartbeats (nodeID -> mining status)
+	miningStatus   map[string]*NodeMiningStatus
+	miningStatusMu sync.RWMutex
 }
 
 // NewJobManager creates a new remote JobManager
 func NewJobManager(mtlsServer *mtls.Server, logger *slog.Logger) *JobManager {
 	return &JobManager{
-		mtlsServer:  mtlsServer,
-		logger:      logger,
-		sshCreds:    make(map[string]*SSHConnectionInfo),
-		pendingCmds: make(map[string]chan *mtls.CommandAck),
+		mtlsServer:   mtlsServer,
+		logger:       logger,
+		sshCreds:     make(map[string]*SSHConnectionInfo),
+		pendingCmds:  make(map[string]chan *mtls.CommandAck),
+		miningStatus: make(map[string]*NodeMiningStatus),
 	}
 }
 
@@ -124,9 +129,13 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (str
 		}
 		// Extract SSH connection info from ack payload
 		if ack.Payload != nil {
+			sshUser := "ubuntu"
+			if user, ok := ack.Payload["ssh_user"].(string); ok && user != "" {
+				sshUser = user
+			}
 			sshInfo := &SSHConnectionInfo{
 				Password: password,
-				User:     "user",
+				User:     sshUser,
 			}
 			if host, ok := ack.Payload["ssh_host"].(string); ok {
 				sshInfo.Host = host
@@ -142,7 +151,7 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (str
 		// Store password anyway - node may still be starting
 		m.storeSSHCreds(spec.SessionID, &SSHConnectionInfo{
 			Password: password,
-			User:     "user",
+			User:     "ubuntu",
 		})
 		m.logger.Warn("start_rental command timed out waiting for ack, password stored",
 			"sessionId", spec.SessionID,
@@ -293,12 +302,86 @@ func parseMemoryToMB(spec string) int {
 }
 
 // HandleNodeMessage processes raw messages from nodes (for mTLS OnMessage callback).
-// Parses CommandAck and delegates to HandleCommandAck.
+// Detects message type: heartbeat or CommandAck.
 func (m *JobManager) HandleNodeMessage(nodeID string, msg []byte) {
-	var ack mtls.CommandAck
-	if err := json.Unmarshal(msg, &ack); err != nil {
+	// Try to detect message type
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &raw); err != nil {
 		m.logger.Error("failed to parse node message", "nodeID", nodeID, "error", err)
 		return
 	}
+
+	// Check if this is a heartbeat message
+	if typeRaw, ok := raw["type"]; ok {
+		var msgType string
+		if err := json.Unmarshal(typeRaw, &msgType); err == nil && msgType == "heartbeat" {
+			m.handleHeartbeat(nodeID, raw)
+			return
+		}
+	}
+
+	// Otherwise treat as CommandAck
+	var ack mtls.CommandAck
+	if err := json.Unmarshal(msg, &ack); err != nil {
+		m.logger.Error("failed to parse command ack", "nodeID", nodeID, "error", err)
+		return
+	}
 	m.HandleCommandAck(nodeID, &ack)
+}
+
+// handleHeartbeat processes heartbeat messages from SDK nodes
+func (m *JobManager) handleHeartbeat(nodeID string, raw map[string]json.RawMessage) {
+	payloadRaw, ok := raw["payload"]
+	if !ok {
+		return
+	}
+
+	var payload struct {
+		Mining *struct {
+			State       string `json:"state"`
+			ContainerID string `json:"container_id"`
+			GPUCount    int    `json:"gpu_count"`
+			StartedAt   string `json:"started_at,omitempty"`
+		} `json:"mining,omitempty"`
+	}
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+		m.logger.Debug("failed to parse heartbeat payload", "nodeID", nodeID, "error", err)
+		return
+	}
+
+	if payload.Mining != nil {
+		status := &NodeMiningStatus{
+			State:       payload.Mining.State,
+			ContainerID: payload.Mining.ContainerID,
+			GPUCount:    payload.Mining.GPUCount,
+			LastSeen:    time.Now(),
+		}
+		if payload.Mining.StartedAt != "" {
+			if t, err := time.Parse(time.RFC3339, payload.Mining.StartedAt); err == nil {
+				status.StartedAt = &t
+			}
+		}
+
+		m.miningStatusMu.Lock()
+		m.miningStatus[nodeID] = status
+		m.miningStatusMu.Unlock()
+	}
+}
+
+// GetNodeMiningStatus returns mining status for a specific node
+func (m *JobManager) GetNodeMiningStatus(nodeID string) *NodeMiningStatus {
+	m.miningStatusMu.RLock()
+	defer m.miningStatusMu.RUnlock()
+	return m.miningStatus[nodeID]
+}
+
+// GetAllMiningStatus returns mining status for all SDK nodes
+func (m *JobManager) GetAllMiningStatus() map[string]*NodeMiningStatus {
+	m.miningStatusMu.RLock()
+	defer m.miningStatusMu.RUnlock()
+	result := make(map[string]*NodeMiningStatus, len(m.miningStatus))
+	for k, v := range m.miningStatus {
+		result[k] = v
+	}
+	return result
 }

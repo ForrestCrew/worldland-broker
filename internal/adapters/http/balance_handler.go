@@ -21,10 +21,14 @@ func cleanBalancePriceString(price string) string {
 // BalanceResponse for GET /api/v1/balance
 type BalanceResponse struct {
 	UserAddress               string `json:"userAddress"`
-	TotalDeposit              string `json:"totalDeposit"`                        // From blockchain
-	TotalSettled              string `json:"totalSettled"`                        // Already settled
-	PendingSettlement         string `json:"pendingSettlement"`                   // RUNNING + STOPPED unsettled
-	AvailableBalance          string `json:"availableBalance"`                    // Deposit - Settled - Pending
+	TotalDeposit              string `json:"totalDeposit"`                        // From blockchain (wei)
+	TotalDepositDisplay       string `json:"totalDepositDisplay"`                 // Human-readable WLC
+	TotalSettled              string `json:"totalSettled"`                        // Already settled (wei)
+	TotalSettledDisplay       string `json:"totalSettledDisplay"`                 // Human-readable WLC
+	PendingSettlement         string `json:"pendingSettlement"`                   // RUNNING + STOPPED unsettled (wei)
+	PendingSettlementDisplay  string `json:"pendingSettlementDisplay"`            // Human-readable WLC
+	AvailableBalance          string `json:"availableBalance"`                    // Deposit - Settled - Pending (wei)
+	AvailableBalanceDisplay   string `json:"availableBalanceDisplay"`             // Human-readable WLC
 	EstimatedMinutesRemaining int64  `json:"estimatedMinutesRemaining,omitempty"` // If active rental
 	ActiveSessionCount        int    `json:"activeSessionCount"`
 }
@@ -101,9 +105,13 @@ func (h *BalanceHandler) GetBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, BalanceResponse{
 		UserAddress:               userAddress,
 		TotalDeposit:              totalDeposit.String(),
+		TotalDepositDisplay:       FormatWeiToDisplay(totalDeposit.String()),
 		TotalSettled:              totalSettled.String(),
+		TotalSettledDisplay:       FormatWeiToDisplay(totalSettled.String()),
 		PendingSettlement:         pendingSettlement.String(),
+		PendingSettlementDisplay:  FormatWeiToDisplay(pendingSettlement.String()),
 		AvailableBalance:          availableBalance.String(),
+		AvailableBalanceDisplay:   FormatWeiToDisplay(availableBalance.String()),
 		EstimatedMinutesRemaining: estimatedMinutes,
 		ActiveSessionCount:        activeCount,
 	})

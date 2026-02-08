@@ -89,24 +89,37 @@ func (r *ExecutorRouter) GetSSHConnectionInfo(ctx context.Context, session *doma
 	return executor.GetSSHConnectionInfo(ctx, session)
 }
 
-// resolveProviderType looks up the provider type for a session's node
+// resolveProviderType looks up the provider type for a session's node.
+// Uses node-level heuristic: nodes with APIEndpoint are Docker/mTLS nodes,
+// nodes without APIEndpoint are K8s cluster nodes.
+// This allows mixed provider types (Docker + K8s) under one provider.
 func (r *ExecutorRouter) resolveProviderType(ctx context.Context, session *domain.RentalSession) (domain.ProviderType, error) {
-	// Look up node to get provider ID
+	// Look up node to get provider ID and check node-level attributes
 	node, err := r.nodeRepo.GetByID(ctx, session.NodeID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get node %s: %w", session.NodeID, err)
 	}
 
-	// Look up provider to get type
+	// Node-level routing: Docker/mTLS nodes have APIEndpoint set,
+	// K8s cluster nodes don't (they're managed by the K8s cluster)
+	if node.APIEndpoint != "" {
+		r.logger.Debug("routing to Docker executor (node has APIEndpoint)",
+			"nodeID", node.ID, "apiEndpoint", node.APIEndpoint)
+		return domain.ProviderTypeDocker, nil
+	}
+
+	// Check provider type as fallback
 	provider, err := r.providerRepo.GetByID(ctx, node.ProviderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get provider %s: %w", node.ProviderID, err)
 	}
 
-	// Default to Docker if provider_type is empty (backward compatibility)
-	if provider.ProviderType == "" {
-		return domain.ProviderTypeDocker, nil
+	if provider.ProviderType == domain.ProviderTypeK8s {
+		r.logger.Debug("routing to K8s executor (K8s provider, no APIEndpoint)",
+			"nodeID", node.ID, "providerID", provider.ID)
+		return domain.ProviderTypeK8s, nil
 	}
 
-	return provider.ProviderType, nil
+	// Default to Docker for backward compatibility
+	return domain.ProviderTypeDocker, nil
 }

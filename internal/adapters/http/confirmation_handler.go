@@ -309,7 +309,7 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 				resp.SSHPort = int(sshInfo.Port)
 				resp.SSHUser = sshInfo.User
 				if resp.SSHUser == "" {
-					resp.SSHUser = "user"
+					resp.SSHUser = "ubuntu"
 				}
 				resp.SSHPassword = sshInfo.Password
 				resp.SSHCommand = fmt.Sprintf("ssh %s@%s -p %d", resp.SSHUser, sshInfo.Host, sshInfo.Port)
@@ -325,9 +325,9 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 			} else {
 				resp.SSHHost = sshInfo.Host
 				resp.SSHPort = int(sshInfo.Port)
-				resp.SSHUser = "user"
+				resp.SSHUser = "ubuntu"
 				resp.SSHPassword = sshInfo.Password
-				resp.SSHCommand = fmt.Sprintf("ssh user@%s -p %d", sshInfo.Host, sshInfo.Port)
+				resp.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", sshInfo.Host, sshInfo.Port)
 			}
 		}
 	}

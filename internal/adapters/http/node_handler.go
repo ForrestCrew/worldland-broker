@@ -51,12 +51,17 @@ func (h *NodeHandler) RegisterNode(c *gin.Context) {
 		return
 	}
 
+	// Auto-detect node mTLS endpoint from request IP
+	// SDK nodes call this API from their own IP, port 8444 is standard mTLS port
+	apiEndpoint := fmt.Sprintf("https://%s:8444", c.ClientIP())
+
 	input := services.RegisterNodeInput{
 		ProviderID:  providerID,
 		GPUUUID:     req.GPUUUID,
 		GPUType:     req.GPUType,
 		MemoryGB:    req.MemoryGB,
 		PricePerSec: req.PricePerSec,
+		APIEndpoint: apiEndpoint,
 	}
 
 	node, err := h.nodeService.RegisterNode(c.Request.Context(), input)
@@ -124,6 +129,7 @@ type NodeResponse struct {
 	GPUType           string            `json:"gpuType"`
 	MemoryGB          int               `json:"memoryGb"`
 	PricePerSecond    string            `json:"pricePerSecond"`
+	PricePerHour      string            `json:"pricePerHour"`
 	APIEndpoint       string            `json:"apiEndpoint"`
 	Status            domain.NodeStatus `json:"status"`
 	CertificateExpiry *string           `json:"certificateExpiry,omitempty"`
@@ -140,6 +146,7 @@ func toNodeResponse(n *domain.Node) *NodeResponse {
 		GPUType:        n.GPUType,
 		MemoryGB:       n.MemoryGB,
 		PricePerSecond: cleanNodePriceString(n.PricePerSecond),
+		PricePerHour:   FormatWeiPerSecToPerHour(n.PricePerSecond),
 		APIEndpoint:    n.APIEndpoint,
 		Status:         n.Status,
 		CreatedAt:      n.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),

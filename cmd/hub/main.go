@@ -335,8 +335,8 @@ func main() {
 		}
 
 		// Create executor adapters
-		dockerExecutor := remote.NewRemoteJobExecutor(remoteJobManager, nodeRepo, logger)
-		k8sExecutor := k8s.NewK8sJobExecutor(clusterRegistry, logger, cfg.K8s.DefaultImage)
+		dockerExecutor := remote.NewRemoteJobExecutor(remoteJobManager, nodeRepo, logger).WithProviderRepo(providerRepo)
+		k8sExecutor := k8s.NewK8sJobExecutor(clusterRegistry, logger, cfg.K8s.DefaultImage).WithNodeRepo(nodeRepo)
 
 		// Create ExecutorRouter
 		executorRouter = sessions.NewExecutorRouter(
@@ -350,13 +350,13 @@ func main() {
 		rentalHandler = rentalHandler.WithExecutorRouter(executorRouter)
 		confirmationHandler = confirmationHandler.WithExecutorRouter(executorRouter)
 
-		// Create provider handler for K8s provider registration
-		providerHandler = httpAdapter.NewProviderHandler(providerRepo, clusterRegistry, logger)
+		// Create provider handler for K8s provider registration (with node repo for GPU auto-discovery)
+		providerHandler = httpAdapter.NewProviderHandler(providerRepo, clusterRegistry, logger).WithNodeRepo(nodeRepo)
 
 		// Create mining handler
 		miningManager := mining.NewK8sMiningManager(clusterRegistry, providerRepo, logger)
 		gpuPool := mining.NewGPUPool()
-		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger)
+		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger).WithRemoteJobManager(remoteJobManager)
 
 		logger.Info("Phase 3: External providers enabled",
 			"k8sClusters", len(clusterRegistry.ListProviderIDs()),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,7 @@ type RegisterNodeInput struct {
 	GPUType      string
 	MemoryGB     int
 	PricePerSec  string // Decimal string for wei precision
+	APIEndpoint  string // Node's mTLS endpoint (auto-detected from request IP)
 }
 
 // RegisterNode creates a new node registration for a provider
@@ -80,6 +82,7 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		existingNode.GPUType = input.GPUType
 		existingNode.MemoryGB = input.MemoryGB
 		existingNode.PricePerSecond = input.PricePerSec
+		existingNode.APIEndpoint = input.APIEndpoint
 		existingNode.Status = domain.NodeStatusActive // Active since node is connecting
 		existingNode.UpdatedAt = time.Now()
 
@@ -115,6 +118,7 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		GPUType:        input.GPUType,
 		MemoryGB:       input.MemoryGB,
 		PricePerSecond: input.PricePerSec,
+		APIEndpoint:    input.APIEndpoint,
 		Status:         domain.NodeStatusActive, // Active since node is connecting
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -184,15 +188,34 @@ type AutoRegisterNodeInput struct {
 
 // AutoRegisterNode registers or updates a node when it connects via mTLS
 // This enables worldland-node to auto-register without HTTP API authentication
+// If the node was already registered via HTTP API (SIWE auth), this updates it instead
 func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNodeInput) (*domain.Node, error) {
+	// First, check if provider already exists by wallet address (HTTP registration path)
+	// The nodeID from mTLS is the wallet address (certificate CN)
+	if s.providerRepo != nil {
+		walletAddress := input.NodeID
+		existingProvider, err := s.providerRepo.GetByWallet(ctx, walletAddress)
+		if err == nil && existingProvider != nil {
+			// Provider already registered via HTTP/SIWE - find their nodes and update
+			nodes, err := s.nodeRepo.GetByProvider(ctx, existingProvider.ID)
+			if err == nil && len(nodes) > 0 {
+				// Update all provider's nodes to active status
+				for _, node := range nodes {
+					node.Status = domain.NodeStatusActive
+					node.UpdatedAt = time.Now()
+					s.nodeRepo.Update(ctx, node)
+				}
+				return nodes[0], nil
+			}
+		}
+	}
+
 	// Generate deterministic UUID from node ID for consistent lookups
-	// Uses UUID v5 (SHA-1 based) with DNS namespace as base
 	nodeUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(input.NodeID)).String()
 
-	// Check if node already exists
+	// Check if node already exists by deterministic UUID
 	existingNode, err := s.nodeRepo.GetByID(ctx, nodeUUID)
 	if err == nil && existingNode != nil {
-		// Node exists - update status to active and update endpoint
 		existingNode.Status = domain.NodeStatusActive
 		existingNode.APIEndpoint = input.APIEndpoint
 		existingNode.UpdatedAt = time.Now()
@@ -202,18 +225,19 @@ func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNo
 		return existingNode, nil
 	}
 
-	// Generate deterministic provider UUID (same as node UUID for mTLS-based registration)
+	// Generate deterministic provider UUID
 	providerUUID := nodeUUID
 
 	// Ensure provider exists (required by foreign key constraint)
 	if s.providerRepo != nil {
 		_, err := s.providerRepo.GetByID(ctx, providerUUID)
 		if err != nil {
-			// Provider doesn't exist - create one for E2E testing
-			// Use a deterministic wallet address derived from node ID
-			mockWalletAddress := fmt.Sprintf("0x%040s", input.NodeID) // Pad to 42 chars
-			if len(mockWalletAddress) > 42 {
-				mockWalletAddress = mockWalletAddress[:42]
+			mockWalletAddress := input.NodeID
+			if !strings.HasPrefix(mockWalletAddress, "0x") {
+				mockWalletAddress = fmt.Sprintf("0x%040s", input.NodeID)
+				if len(mockWalletAddress) > 42 {
+					mockWalletAddress = mockWalletAddress[:42]
+				}
 			}
 
 			provider := &domain.Provider{
@@ -224,7 +248,12 @@ func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNo
 				UpdatedAt:     time.Now(),
 			}
 			if err := s.providerRepo.Create(ctx, provider); err != nil {
-				return nil, fmt.Errorf("failed to create provider for auto-registration: %w", err)
+				// If duplicate wallet, provider was registered via HTTP - look it up
+				existing, lookupErr := s.providerRepo.GetByWallet(ctx, mockWalletAddress)
+				if lookupErr != nil || existing == nil {
+					return nil, fmt.Errorf("failed to create provider for auto-registration: %w", err)
+				}
+				providerUUID = existing.ID
 			}
 		}
 	}
@@ -252,10 +281,26 @@ func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNo
 }
 
 // MarkNodeOffline marks a node as offline when it disconnects
+// nodeID can be a direct node ID or a wallet address (from mTLS CN)
 func (s *NodeService) MarkNodeOffline(ctx context.Context, nodeID string) error {
+	// Try direct lookup first
 	node, err := s.nodeRepo.GetByID(ctx, nodeID)
 	if err != nil {
-		return nil // Node doesn't exist, nothing to mark offline
+		// nodeID might be a wallet address - look up provider's nodes
+		if s.providerRepo != nil {
+			provider, err := s.providerRepo.GetByWallet(ctx, nodeID)
+			if err == nil && provider != nil {
+				nodes, err := s.nodeRepo.GetByProvider(ctx, provider.ID)
+				if err == nil {
+					for _, n := range nodes {
+						n.Status = domain.NodeStatusOffline
+						n.UpdatedAt = time.Now()
+						s.nodeRepo.Update(ctx, n)
+					}
+				}
+			}
+		}
+		return nil
 	}
 
 	node.Status = domain.NodeStatusOffline

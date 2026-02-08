@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -14,6 +16,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
+
+// extractHostIP extracts a plain IP from a URL like "https://34.64.255.101:6443"
+func extractHostIP(hostOrURL string) string {
+	if u, err := url.Parse(hostOrURL); err == nil && u.Host != "" {
+		host, _, err := net.SplitHostPort(u.Host)
+		if err == nil {
+			return host
+		}
+		return u.Host
+	}
+	return hostOrURL
+}
 
 // JobManager manages GPU session Pod lifecycle
 type JobManager struct {
@@ -314,31 +328,41 @@ func (m *JobManager) GetSSHConnectionInfo(ctx context.Context, userAddress, sess
 	}
 
 	// Determine host IP for SSH connection
+	// Always query the K8s node where the Pod is running for the actual IP
 	var nodeIP string
 
-	// Use external host override if configured (for cloud environments without K8s ExternalIP)
-	if m.externalHost != "" {
-		nodeIP = m.externalHost
-	} else {
-		// Get Node to find IP address
-		node, err := m.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
-		if err != nil {
+	node, err := m.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
+	if err != nil {
+		// Fallback to externalHost if node lookup fails (but strip protocol/port)
+		if m.externalHost != "" {
+			nodeIP = extractHostIP(m.externalHost)
+		}
+		if nodeIP == "" {
 			return nil, fmt.Errorf("failed to get node: %w", err)
 		}
-
-		for _, addr := range node.Status.Addresses {
-			if addr.Type == corev1.NodeExternalIP {
-				nodeIP = addr.Address
-				break
-			}
-			if addr.Type == corev1.NodeInternalIP && nodeIP == "" {
-				nodeIP = addr.Address
+	} else {
+		// Check annotation first (for GCP nodes without cloud-provider ExternalIP)
+		if ip, ok := node.Annotations["worldland.io/external-ip"]; ok && ip != "" {
+			nodeIP = ip
+		} else {
+			for _, addr := range node.Status.Addresses {
+				if addr.Type == corev1.NodeExternalIP {
+					nodeIP = addr.Address
+					break
+				}
+				if addr.Type == corev1.NodeInternalIP && nodeIP == "" {
+					nodeIP = addr.Address
+				}
 			}
 		}
+	}
 
-		if nodeIP == "" {
-			return nil, fmt.Errorf("node IP not found")
-		}
+	// Final fallback: use externalHost with protocol/port stripped
+	if nodeIP == "" && m.externalHost != "" {
+		nodeIP = extractHostIP(m.externalHost)
+	}
+	if nodeIP == "" {
+		return nil, fmt.Errorf("node IP not found")
 	}
 
 	// Retrieve SSH password from K8s Secret

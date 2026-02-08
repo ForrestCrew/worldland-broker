@@ -118,6 +118,7 @@ func NewRouterWithConfig(
 			if providerHandler != nil {
 				providers := protected.Group("/providers")
 				{
+					providers.GET("/me", providerHandler.GetMyProvider)
 					providers.POST("/k8s", providerHandler.RegisterK8sProvider)
 				}
 			}
