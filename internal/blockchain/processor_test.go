@@ -173,6 +173,14 @@ func (m *MockRentalSessionRepo) CreateExtensionRecord(ctx context.Context, sessi
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockRentalSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *MockRentalSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 // Test fixtures
 var (
 	testUserAddr     = common.HexToAddress("0x1234567890123456789012345678901234567890")

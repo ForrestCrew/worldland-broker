@@ -143,6 +143,14 @@ func (m *mockSessionRepo) FindPendingSettlement(ctx context.Context, user string
 	return m.stoppedSessions, nil
 }
 
+func (m *mockSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *mockSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 func timePtr(t time.Time) *time.Time {
 	return &t
 }

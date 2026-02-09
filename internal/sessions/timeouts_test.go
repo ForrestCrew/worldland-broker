@@ -105,6 +105,14 @@ func (m *MockStaleSessionRepo) TouchSession(ctx context.Context, sessionID strin
 	return nil
 }
 
+func (m *MockStaleSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *MockStaleSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 // MockSessionFailer implements SessionFailer for testing
 type MockSessionFailer struct {
 	mock.Mock

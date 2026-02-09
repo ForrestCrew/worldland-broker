@@ -143,6 +143,14 @@ func (m *mockConfirmationSessionRepo) TouchSession(ctx context.Context, sessionI
 	return nil
 }
 
+func (m *mockConfirmationSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *mockConfirmationSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 type mockConfirmationNodeRepo struct {
 	nodes map[string]*domain.Node
 }

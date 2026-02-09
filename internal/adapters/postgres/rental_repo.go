@@ -590,6 +590,67 @@ func (r *RentalSessionRepository) collectSessions(rows pgx.Rows) ([]*domain.Rent
 	return sessions, nil
 }
 
+// UpdateSSHInfo persists SSH connection credentials for a session
+func (r *RentalSessionRepository) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		UPDATE rental_sessions
+		SET ssh_host = $2, ssh_port = $3, ssh_user = $4, ssh_password = $5, updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, sessionID, host, port, user, password)
+	if err != nil {
+		return fmt.Errorf("failed to update SSH info: %w", err)
+	}
+	return nil
+}
+
+// LoadRunningSSHInfo loads SSH credentials for all RUNNING sessions (Hub restart recovery)
+func (r *RentalSessionRepository) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, ssh_host, ssh_port, ssh_user, ssh_password
+		FROM rental_sessions
+		WHERE state = 'RUNNING' AND ssh_password IS NOT NULL AND deleted_at IS NULL
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load running SSH info: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]*domain.SSHConnectionInfo)
+	for rows.Next() {
+		var sessionID string
+		var host, user, password *string
+		var port *int32
+		if err := rows.Scan(&sessionID, &host, &port, &user, &password); err != nil {
+			return nil, fmt.Errorf("failed to scan SSH info: %w", err)
+		}
+		info := &domain.SSHConnectionInfo{}
+		if host != nil {
+			info.Host = *host
+		}
+		if port != nil {
+			info.Port = *port
+		}
+		if user != nil {
+			info.User = *user
+		}
+		if password != nil {
+			info.Password = *password
+		}
+		result[sessionID] = info
+	}
+	return result, nil
+}
+
 // collectSessionsWithSettlement collects rows into a slice of RentalSession (including settlement fields)
 func (r *RentalSessionRepository) collectSessionsWithSettlement(rows pgx.Rows) ([]*domain.RentalSession, error) {
 	var sessions []*domain.RentalSession

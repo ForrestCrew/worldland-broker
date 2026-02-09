@@ -171,6 +171,14 @@ func (m *rentalMockRentalSessionRepo) CreateExtensionRecord(ctx context.Context,
 	return "ext-record-id", nil
 }
 
+func (m *rentalMockRentalSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *rentalMockRentalSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 type rentalMockNodeRepo struct {
 	nodes map[string]*domain.Node
 }

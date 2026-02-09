@@ -1,6 +1,9 @@
 package remote
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // GPUJobSpec contains parameters for creating a GPU container on a remote node
 type GPUJobSpec struct {
@@ -58,6 +61,12 @@ type NodeMiningStatus struct {
 	GPUCount    int        `json:"gpuCount"`
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	LastSeen    time.Time  `json:"lastSeen"`
+}
+
+// SSHPersister persists SSH credentials to DB for Hub restart recovery
+type SSHPersister interface {
+	UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error
+	LoadRunningSSHInfo(ctx context.Context) (map[string]*SSHConnectionInfo, error)
 }
 
 // GPUMetrics represents GPU metrics from a node heartbeat

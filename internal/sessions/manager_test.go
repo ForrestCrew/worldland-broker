@@ -146,6 +146,14 @@ func (m *mockRentalSessionRepo) TouchSession(ctx context.Context, sessionID stri
 	return nil
 }
 
+func (m *mockRentalSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *mockRentalSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 // mockNodeRepo is a mock implementation of NodeRepository
 type mockNodeRepo struct {
 	nodes map[string]*domain.Node

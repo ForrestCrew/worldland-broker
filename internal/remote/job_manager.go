@@ -22,9 +22,12 @@ type JobManager struct {
 	mtlsServer *mtls.Server
 	logger     *slog.Logger
 
-	// SSH credentials stored in-memory (backed by DB via session repo)
+	// SSH credentials stored in-memory (backed by DB via SSHPersister)
 	sshCreds   map[string]*SSHConnectionInfo // sessionID -> SSH info
 	sshCredsMu sync.RWMutex
+
+	// DB persistence for SSH credentials (survives Hub restart)
+	sshPersister SSHPersister
 
 	// Pending command responses (command ack channel)
 	pendingCmds   map[string]chan *mtls.CommandAck
@@ -44,6 +47,34 @@ func NewJobManager(mtlsServer *mtls.Server, logger *slog.Logger) *JobManager {
 		pendingCmds:  make(map[string]chan *mtls.CommandAck),
 		miningStatus: make(map[string]*NodeMiningStatus),
 	}
+}
+
+// WithSSHPersister sets the DB persister for SSH credentials
+func (m *JobManager) WithSSHPersister(p SSHPersister) *JobManager {
+	m.sshPersister = p
+	return m
+}
+
+// RestoreSSHCredentials loads SSH credentials for RUNNING sessions from DB into memory.
+// Call this on Hub startup to survive restarts.
+func (m *JobManager) RestoreSSHCredentials(ctx context.Context) error {
+	if m.sshPersister == nil {
+		return nil
+	}
+
+	creds, err := m.sshPersister.LoadRunningSSHInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load SSH credentials from DB: %w", err)
+	}
+
+	m.sshCredsMu.Lock()
+	for sessionID, info := range creds {
+		m.sshCreds[sessionID] = info
+	}
+	m.sshCredsMu.Unlock()
+
+	m.logger.Info("restored SSH credentials from DB", "count", len(creds))
+	return nil
 }
 
 // GenerateSSHPassword generates a cryptographically secure random password
@@ -257,11 +288,20 @@ func (m *JobManager) HandleCommandAck(nodeID string, ack *mtls.CommandAck) {
 // UpdateSSHInfo updates SSH connection info for a session (called when node reports container ready)
 func (m *JobManager) UpdateSSHInfo(sessionID string, host string, port int32) {
 	m.sshCredsMu.Lock()
-	defer m.sshCredsMu.Unlock()
-
-	if info, ok := m.sshCreds[sessionID]; ok {
+	info, ok := m.sshCreds[sessionID]
+	if ok {
 		info.Host = host
 		info.Port = port
+	}
+	m.sshCredsMu.Unlock()
+
+	// Persist updated host/port to DB
+	if ok && m.sshPersister != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.sshPersister.UpdateSSHInfo(ctx, sessionID, info.Host, info.Port, info.User, info.Password); err != nil {
+			m.logger.Error("failed to persist updated SSH info to DB", "sessionId", sessionID, "error", err)
+		}
 	}
 }
 
@@ -283,11 +323,20 @@ func (m *JobManager) handleContainerStateUpdate(nodeID, sessionID, state string,
 	}
 }
 
-// storeSSHCreds stores SSH credentials for a session
+// storeSSHCreds stores SSH credentials for a session (memory + DB)
 func (m *JobManager) storeSSHCreds(sessionID string, info *SSHConnectionInfo) {
 	m.sshCredsMu.Lock()
-	defer m.sshCredsMu.Unlock()
 	m.sshCreds[sessionID] = info
+	m.sshCredsMu.Unlock()
+
+	// Persist to DB
+	if m.sshPersister != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.sshPersister.UpdateSSHInfo(ctx, sessionID, info.Host, info.Port, info.User, info.Password); err != nil {
+			m.logger.Error("failed to persist SSH info to DB", "sessionId", sessionID, "error", err)
+		}
+	}
 }
 
 // deleteSSHCreds removes SSH credentials for a session

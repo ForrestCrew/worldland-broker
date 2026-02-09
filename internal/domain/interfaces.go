@@ -78,6 +78,11 @@ type RentalSessionRepository interface {
 	UpdateExtension(ctx context.Context, sessionID string, extendedUntil time.Time, extensionMinutes int) error
 	// CreateExtensionRecord creates an audit record for a session extension (16-01)
 	CreateExtensionRecord(ctx context.Context, sessionID string, extensionMinutes int, costEstimate, idempotencyKey string) (string, error)
+
+	// UpdateSSHInfo persists SSH connection credentials for a session
+	UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error
+	// LoadRunningSSHInfo loads SSH credentials for all RUNNING sessions (for Hub restart recovery)
+	LoadRunningSSHInfo(ctx context.Context) (map[string]*SSHConnectionInfo, error)
 }
 
 // ImageRepository defines the interface for base image preset persistence (24-01)

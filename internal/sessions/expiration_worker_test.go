@@ -170,6 +170,14 @@ func (s *SimpleSessionRepo) CreateExtensionRecord(ctx context.Context, sessionID
 	return "", nil
 }
 
+func (s *SimpleSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (s *SimpleSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}
+
 // SimpleNodeRepo - minimal in-memory node repo
 type SimpleNodeRepo struct {
 	nodes map[string]*domain.Node

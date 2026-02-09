@@ -148,3 +148,11 @@ func (m *mockBalanceSessionRepo) FindByUserAndState(ctx context.Context, user st
 func (m *mockBalanceSessionRepo) FindPendingSettlement(ctx context.Context, user string) ([]*domain.RentalSession, error) {
 	return m.pendingSessions, nil
 }
+
+func (m *mockBalanceSessionRepo) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return nil
+}
+
+func (m *mockBalanceSessionRepo) LoadRunningSSHInfo(ctx context.Context) (map[string]*domain.SSHConnectionInfo, error) {
+	return nil, nil
+}

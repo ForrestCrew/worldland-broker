@@ -40,6 +40,37 @@ func (e *RemoteJobExecutor) WithProviderRepo(providerRepo domain.ProviderReposit
 // Compile-time interface check
 var _ domain.JobExecutor = (*RemoteJobExecutor)(nil)
 
+// RentalRepoSSHAdapter adapts domain.RentalSessionRepository to remote.SSHPersister
+type RentalRepoSSHAdapter struct {
+	repo domain.RentalSessionRepository
+}
+
+// NewRentalRepoSSHAdapter creates an adapter
+func NewRentalRepoSSHAdapter(repo domain.RentalSessionRepository) *RentalRepoSSHAdapter {
+	return &RentalRepoSSHAdapter{repo: repo}
+}
+
+func (a *RentalRepoSSHAdapter) UpdateSSHInfo(ctx context.Context, sessionID, host string, port int32, user, password string) error {
+	return a.repo.UpdateSSHInfo(ctx, sessionID, host, port, user, password)
+}
+
+func (a *RentalRepoSSHAdapter) LoadRunningSSHInfo(ctx context.Context) (map[string]*SSHConnectionInfo, error) {
+	domainMap, err := a.repo.LoadRunningSSHInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*SSHConnectionInfo, len(domainMap))
+	for k, v := range domainMap {
+		result[k] = &SSHConnectionInfo{
+			Host:     v.Host,
+			Port:     v.Port,
+			Password: v.Password,
+			User:     v.User,
+		}
+	}
+	return result, nil
+}
+
 // CreateGPUSession sends a start_rental command to the remote node via mTLS
 func (e *RemoteJobExecutor) CreateGPUSession(ctx context.Context, spec domain.JobSpec) (string, error) {
 	// Look up node to get provider info

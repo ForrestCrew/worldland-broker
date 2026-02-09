@@ -309,6 +309,13 @@ func main() {
 	// Initialize Remote JobManager for Docker-based providers (V3)
 	remoteJobManager := remote.NewJobManager(mtlsServer, logger)
 
+	// Wire SSH persistence so credentials survive Hub restart
+	sshAdapter := remote.NewRentalRepoSSHAdapter(rentalSessionRepo)
+	remoteJobManager.WithSSHPersister(sshAdapter)
+	if err := remoteJobManager.RestoreSSHCredentials(ctx); err != nil {
+		logger.Warn("Failed to restore SSH credentials from DB", "error", err)
+	}
+
 	// Phase 3: Initialize ExternalClusterRegistry and ExecutorRouter
 	clusterRegistry := k8s.NewExternalClusterRegistry(logger)
 	var executorRouter *sessions.ExecutorRouter
