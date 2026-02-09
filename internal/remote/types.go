@@ -8,6 +8,7 @@ type GPUJobSpec struct {
 	UserAddress   string
 	ProviderID    string
 	NodeID        string // mTLS node identifier (wallet address)
+	NodeHost      string // Node's external IP (from api_endpoint, for SSH fallback)
 	GPUCount      int
 	GPUModel      string
 	GPUDeviceID   string // NVIDIA GPU UUID for Docker device request

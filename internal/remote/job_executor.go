@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 
 	"github.com/worldland/worldland-hub/internal/domain"
 )
@@ -59,12 +60,21 @@ func (e *RemoteJobExecutor) CreateGPUSession(ctx context.Context, spec domain.Jo
 		}
 	}
 
+	// Extract host IP from node's API endpoint (e.g., "https://136.113.211.129:8444" → "136.113.211.129")
+	nodeHost := ""
+	if node.APIEndpoint != "" {
+		if u, err := url.Parse(node.APIEndpoint); err == nil {
+			nodeHost = u.Hostname()
+		}
+	}
+
 	// Convert domain.JobSpec to remote.GPUJobSpec
 	remoteSpec := GPUJobSpec{
 		SessionID:     spec.SessionID,
 		UserAddress:   spec.UserAddress,
 		ProviderID:    spec.ProviderID,
 		NodeID:        mtlsNodeID, // mTLS identifier = wallet address
+		NodeHost:      nodeHost,
 		GPUCount:      spec.GPUCount,
 		GPUModel:      spec.GPUModel,
 		GPUDeviceID:   spec.GPUDeviceID,

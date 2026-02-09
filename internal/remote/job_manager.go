@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,14 +149,17 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (str
 		return password, nil
 
 	case <-time.After(2 * time.Minute):
-		// Store password anyway - node may still be starting
+		// Store password with host info from node's API endpoint (fallback for slow image pulls)
 		m.storeSSHCreds(spec.SessionID, &SSHConnectionInfo{
+			Host:     spec.NodeHost,
+			Port:     30000, // default SSH port for rental containers
 			Password: password,
 			User:     "ubuntu",
 		})
-		m.logger.Warn("start_rental command timed out waiting for ack, password stored",
+		m.logger.Warn("start_rental command timed out waiting for ack, password stored with fallback host",
 			"sessionId", spec.SessionID,
 			"nodeId", spec.NodeID,
+			"host", spec.NodeHost,
 		)
 		return password, nil
 
@@ -224,6 +228,19 @@ func (m *JobManager) HandleCommandAck(nodeID string, ack *mtls.CommandAck) {
 		default:
 		}
 		return
+	}
+
+	// Late ack (after timeout) - update SSH info if this was a start_rental response
+	if strings.HasPrefix(ack.CommandID, "start-rental-") && ack.Status == "ok" && ack.Payload != nil {
+		if sessionID, ok := ack.Payload["session_id"].(string); ok && sessionID != "" {
+			host, _ := ack.Payload["ssh_host"].(string)
+			port, _ := ack.Payload["ssh_port"].(float64)
+			if host != "" && port > 0 {
+				m.UpdateSSHInfo(sessionID, host, int32(port))
+				m.logger.Info("late ack: updated SSH info after timeout",
+					"sessionId", sessionID, "host", host, "port", int32(port))
+			}
+		}
 	}
 
 	// Handle state updates from node (container_state_update messages)
