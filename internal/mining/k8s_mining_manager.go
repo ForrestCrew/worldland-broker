@@ -43,6 +43,7 @@ type MiningStatus struct {
 type K8sMiningManager struct {
 	clusterRegistry *k8s.ExternalClusterRegistry
 	providerRepo    domain.ProviderRepository
+	gpuPool         *GPUPool
 	logger          *slog.Logger
 }
 
@@ -57,6 +58,60 @@ func NewK8sMiningManager(
 		providerRepo:    providerRepo,
 		logger:          logger,
 	}
+}
+
+// WithGPUPool sets the GPU pool for auto-discovery
+func (m *K8sMiningManager) WithGPUPool(pool *GPUPool) *K8sMiningManager {
+	m.gpuPool = pool
+	return m
+}
+
+// DiscoverGPUs queries K8s nodes for nvidia.com/gpu capacity and populates the GPUPool.
+// Called on startup for all registered K8s providers.
+func (m *K8sMiningManager) DiscoverGPUs(ctx context.Context) {
+	if m.gpuPool == nil {
+		return
+	}
+
+	for _, providerID := range m.clusterRegistry.ListProviderIDs() {
+		gpuCount, err := m.discoverProviderGPUs(ctx, providerID)
+		if err != nil {
+			m.logger.Warn("failed to discover GPUs for provider",
+				"providerID", providerID,
+				"error", err,
+			)
+			continue
+		}
+		if gpuCount > 0 {
+			m.gpuPool.SetTotal(providerID, gpuCount)
+			m.logger.Info("discovered GPUs for provider",
+				"providerID", providerID,
+				"gpuCount", gpuCount,
+			)
+		}
+	}
+}
+
+// discoverProviderGPUs queries K8s nodes and counts total nvidia.com/gpu capacity
+func (m *K8sMiningManager) discoverProviderGPUs(ctx context.Context, providerID string) (int, error) {
+	client := m.clusterRegistry.GetClient(providerID)
+	if client == nil {
+		return 0, fmt.Errorf("no cluster registered")
+	}
+
+	nodes, err := client.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	totalGPUs := 0
+	for _, node := range nodes.Items {
+		if gpuRes, ok := node.Status.Capacity["nvidia.com/gpu"]; ok {
+			totalGPUs += int(gpuRes.Value())
+		}
+	}
+
+	return totalGPUs, nil
 }
 
 // DeployMiningPod deploys a mining pod on the provider's K8s cluster

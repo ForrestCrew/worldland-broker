@@ -103,11 +103,20 @@ func (h *MiningHandler) GetMiningStatus(c *gin.Context) {
 	allocation := h.gpuPool.GetAllocation(providerID)
 	resp["allocation"] = allocation
 
-	// SDK node mining status (from heartbeat)
+	// SDK node mining status (from heartbeat) - filtered by provider's wallet address
 	if h.remoteJobManager != nil {
 		allStatus := h.remoteJobManager.GetAllMiningStatus()
 		sdkNodes := make([]gin.H, 0)
+
+		// Get the provider's wallet address from auth context
+		walletAddress, _ := c.Get("wallet_address")
+		providerWallet, _ := walletAddress.(string)
+
 		for nodeID, ms := range allStatus {
+			// Only include nodes belonging to this provider
+			if providerWallet != "" && nodeID != providerWallet {
+				continue
+			}
 			sdkNodes = append(sdkNodes, gin.H{
 				"nodeId":      nodeID,
 				"state":       ms.State,

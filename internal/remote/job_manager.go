@@ -333,8 +333,10 @@ func (m *JobManager) HandleNodeMessage(nodeID string, msg []byte) {
 func (m *JobManager) handleHeartbeat(nodeID string, raw map[string]json.RawMessage) {
 	payloadRaw, ok := raw["payload"]
 	if !ok {
+		m.logger.Warn("heartbeat missing payload", "nodeID", nodeID)
 		return
 	}
+	m.logger.Info("heartbeat received", "nodeID", nodeID)
 
 	var payload struct {
 		Mining *struct {
@@ -365,6 +367,12 @@ func (m *JobManager) handleHeartbeat(nodeID string, raw map[string]json.RawMessa
 		m.miningStatusMu.Lock()
 		m.miningStatus[nodeID] = status
 		m.miningStatusMu.Unlock()
+
+		m.logger.Info("mining status updated from heartbeat",
+			"nodeID", nodeID,
+			"state", status.State,
+			"gpuCount", status.GPUCount,
+		)
 	}
 }
 

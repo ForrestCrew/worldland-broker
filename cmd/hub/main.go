@@ -353,9 +353,10 @@ func main() {
 		// Create provider handler for K8s provider registration (with node repo for GPU auto-discovery)
 		providerHandler = httpAdapter.NewProviderHandler(providerRepo, clusterRegistry, logger).WithNodeRepo(nodeRepo)
 
-		// Create mining handler
-		miningManager := mining.NewK8sMiningManager(clusterRegistry, providerRepo, logger)
+		// Create mining handler with GPU auto-discovery
 		gpuPool := mining.NewGPUPool()
+		miningManager := mining.NewK8sMiningManager(clusterRegistry, providerRepo, logger).WithGPUPool(gpuPool)
+		miningManager.DiscoverGPUs(ctx)
 		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger).WithRemoteJobManager(remoteJobManager)
 
 		logger.Info("Phase 3: External providers enabled",
