@@ -207,6 +207,9 @@ func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNo
 				}
 				return nodes[0], nil
 			}
+			// Provider exists but no nodes yet (SIWE registered, node not yet registered via HTTP)
+			// Don't create a ghost node - the node will register itself via POST /api/v1/nodes
+			return nil, nil
 		}
 	}
 
