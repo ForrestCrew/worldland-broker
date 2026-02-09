@@ -127,7 +127,7 @@ func main() {
 	nonceRepo := postgres.NewNonceRepository(dbPool)
 
 	// Initialize auth components
-	siweVerifier := auth.NewSIWEVerifier(cfg.SIWEDomain, nonceRepo)
+	siweVerifier := auth.NewSIWEVerifier(cfg.SIWEDomains, nonceRepo)
 	sessionManager := auth.NewSessionManager(sessionRepo, cfg.SessionTTL)
 
 	// Initialize services

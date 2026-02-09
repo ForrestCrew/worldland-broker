@@ -80,7 +80,7 @@ func TestVerifySIWE_ValidSignature(t *testing.T) {
 			nonce: time.Now().Add(5 * time.Minute),
 		},
 	}
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	message, signature := generateTestSignature(t, "hub.worldland.io", testAddress, nonce)
 
@@ -99,7 +99,7 @@ func TestVerifySIWE_InvalidSignature(t *testing.T) {
 			nonce: time.Now().Add(5 * time.Minute),
 		},
 	}
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	// Generate valid message but use invalid signature
 	message, _ := generateTestSignature(t, "hub.worldland.io", testAddress, nonce)
@@ -121,7 +121,7 @@ func TestVerifySIWE_ExpiredNonce(t *testing.T) {
 			nonce: time.Now().Add(-1 * time.Minute),
 		},
 	}
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	message, signature := generateTestSignature(t, "hub.worldland.io", testAddress, nonce)
 
@@ -141,7 +141,7 @@ func TestVerifySIWE_DomainMismatch(t *testing.T) {
 		},
 	}
 	// Verifier expects hub.worldland.io
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	// But message is signed for evil.com
 	message, signature := generateTestSignature(t, "evil.com", testAddress, nonce)
@@ -156,7 +156,7 @@ func TestVerifySIWE_MalformedMessage(t *testing.T) {
 	nonceValidator := &mockNonceValidator{
 		nonces: map[string]time.Time{},
 	}
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	message := "not a valid SIWE message at all"
 	signature := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12"
@@ -173,7 +173,7 @@ func TestVerifySIWE_MissingNonce(t *testing.T) {
 	nonceValidator := &mockNonceValidator{
 		nonces: map[string]time.Time{},
 	}
-	verifier := auth.NewSIWEVerifier("hub.worldland.io", nonceValidator)
+	verifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceValidator)
 
 	// Generate a valid message but don't add nonce to validator
 	message, signature := generateTestSignature(t, "hub.worldland.io", testAddress, "missingnonce0001")

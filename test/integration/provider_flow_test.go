@@ -87,7 +87,7 @@ func TestProviderOnboardingFlow(t *testing.T) {
 	nonceRepo := postgres.NewNonceRepository(dbPool)
 
 	// Initialize auth components
-	siweVerifier := auth.NewSIWEVerifier("hub.worldland.io", nonceRepo)
+	siweVerifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceRepo)
 	sessionManager := auth.NewSessionManager(sessionRepo, 24*time.Hour)
 
 	// Initialize services

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	siwe "github.com/spruceid/siwe-go"
 )
@@ -16,15 +17,16 @@ type NonceValidator interface {
 // SIWEVerifier handles SIWE (Sign-In with Ethereum) message verification
 // It validates signatures, domains, nonces, and timestamps according to EIP-4361
 type SIWEVerifier struct {
-	expectedDomain string
-	nonceValidator NonceValidator
+	expectedDomains []string
+	nonceValidator  NonceValidator
 }
 
-// NewSIWEVerifier creates a new SIWE verifier with the specified domain and nonce validator
-func NewSIWEVerifier(domain string, nonceValidator NonceValidator) *SIWEVerifier {
+// NewSIWEVerifier creates a new SIWE verifier with the specified domains and nonce validator.
+// Accepts multiple domains for multi-frontend support (e.g., GCP + AWS deployments).
+func NewSIWEVerifier(domains []string, nonceValidator NonceValidator) *SIWEVerifier {
 	return &SIWEVerifier{
-		expectedDomain: domain,
-		nonceValidator: nonceValidator,
+		expectedDomains: domains,
+		nonceValidator:  nonceValidator,
 	}
 }
 
@@ -33,7 +35,7 @@ func NewSIWEVerifier(domain string, nonceValidator NonceValidator) *SIWEVerifier
 //
 // Validation steps:
 // 1. Parse SIWE message (EIP-4361 format)
-// 2. Validate domain matches expected domain
+// 2. Validate domain matches one of expected domains
 // 3. Validate and consume nonce atomically (prevents replay attacks)
 // 4. Verify cryptographic signature
 func (v *SIWEVerifier) Verify(ctx context.Context, message, signature string) (string, error) {
@@ -44,9 +46,17 @@ func (v *SIWEVerifier) Verify(ctx context.Context, message, signature string) (s
 	}
 
 	// Validate domain to prevent phishing attacks
-	if parsedMessage.GetDomain() != v.expectedDomain {
-		return "", fmt.Errorf("domain mismatch: expected %s, got %s",
-			v.expectedDomain, parsedMessage.GetDomain())
+	msgDomain := parsedMessage.GetDomain()
+	matchedDomain := ""
+	for _, d := range v.expectedDomains {
+		if msgDomain == d {
+			matchedDomain = d
+			break
+		}
+	}
+	if matchedDomain == "" {
+		return "", fmt.Errorf("domain mismatch: got %s, expected one of [%s]",
+			msgDomain, strings.Join(v.expectedDomains, ", "))
 	}
 
 	// Validate and atomically consume nonce to prevent replay attacks
@@ -61,7 +71,7 @@ func (v *SIWEVerifier) Verify(ctx context.Context, message, signature string) (s
 
 	// Verify the cryptographic signature
 	// This recovers the public key from the signature and verifies it matches the address
-	_, err = parsedMessage.Verify(signature, &v.expectedDomain, nil, nil)
+	_, err = parsedMessage.Verify(signature, &matchedDomain, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("signature verification failed: %w", err)
 	}

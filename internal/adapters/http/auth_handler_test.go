@@ -237,7 +237,7 @@ func setupTestRouter() *gin.Engine {
 	sessionRepo := newMockSessionRepo()
 	nodeRepo := newMockNodeRepo()
 
-	siweVerifier := auth.NewSIWEVerifier("hub.worldland.io", nonceRepo)
+	siweVerifier := auth.NewSIWEVerifier([]string{"hub.worldland.io"}, nonceRepo)
 	sessionManager := auth.NewSessionManager(sessionRepo, 24*time.Hour)
 	nodeService := services.NewNodeService(nodeRepo)
 

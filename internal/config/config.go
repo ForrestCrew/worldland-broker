@@ -61,7 +61,7 @@ type Config struct {
 	NodeClientKeyPath  string
 
 	// Auth
-	SIWEDomain   string
+	SIWEDomains []string
 	SessionTTL   time.Duration
 	AuthDisabled bool // Disable auth for E2E testing
 
@@ -153,7 +153,7 @@ func LoadConfig() *Config {
 		NodeClientCertPath: getEnv("NODE_CLIENT_CERT_PATH", "certs/hub-client.crt"),
 		NodeClientKeyPath:  getEnv("NODE_CLIENT_KEY_PATH", "certs/hub-client.key"),
 
-		SIWEDomain:   getEnv("SIWE_DOMAIN", "hub.worldland.io"),
+		SIWEDomains: parseSIWEDomains(getEnv("SIWE_DOMAIN", "hub.worldland.io")),
 		SessionTTL:   24 * time.Hour,
 		AuthDisabled: os.Getenv("AUTH_DISABLED") == "true",
 
@@ -185,4 +185,17 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// parseSIWEDomains parses comma-separated SIWE domains (multi-frontend support)
+func parseSIWEDomains(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var domains []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			domains = append(domains, trimmed)
+		}
+	}
+	return domains
 }
