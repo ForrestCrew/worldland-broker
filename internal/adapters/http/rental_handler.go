@@ -151,7 +151,7 @@ func (h *RentalHandler) FindProviders(c *gin.Context) {
 type CreateSessionRequest struct {
 	NodeID         string `json:"nodeId" binding:"required"`
 	PricePerSecond string `json:"pricePerSecond" binding:"required"`
-	Image          string `json:"image,omitempty"` // Optional: preset UUID or custom docker image URL (24-03)
+	Image          string `json:"image,omitempty"` // Optional: preset image UUID (custom URLs not allowed)
 }
 
 // CreateSessionResponse represents the created session
@@ -250,7 +250,7 @@ func (h *RentalHandler) CreateSession(c *gin.Context) {
 		userAddress,
 		req.NodeID,
 		req.PricePerSecond,
-		req.Image, // Pass image parameter: empty string uses default, UUID resolves preset, custom URL validated
+		req.Image, // Pass image parameter: empty string uses default, UUID resolves preset
 	)
 	if err != nil {
 		// Handle image-related errors (24-03)

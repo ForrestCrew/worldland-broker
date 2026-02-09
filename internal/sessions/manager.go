@@ -67,8 +67,7 @@ type SessionManager struct {
 	providerRepo     domain.ProviderRepository
 	balanceValidator blockchain.BalanceValidatorInterface
 	// Optional dependencies for image selection (24-03)
-	imageRepo      domain.ImageRepository
-	imageValidator *images.ImageValidator
+	imageRepo domain.ImageRepository
 }
 
 // NewSessionManager creates a new SessionManager with the required dependencies
@@ -90,18 +89,11 @@ func (m *SessionManager) WithImageRepository(repo domain.ImageRepository) *Sessi
 	return m
 }
 
-// WithImageValidator sets the optional ImageValidator for custom image validation
-func (m *SessionManager) WithImageValidator(validator *images.ImageValidator) *SessionManager {
-	m.imageValidator = validator
-	return m
-}
-
 // CreateSession creates a new rental session in PENDING state
 // It looks up the node to get the provider address
 // The dockerImage parameter can be:
 //   - Empty string: uses domain.DefaultImage
 //   - UUID: resolved to docker_image via ImageRepository (preset ID)
-//   - Custom image URL: validated by ImageValidator
 func (m *SessionManager) CreateSession(ctx context.Context, userAddress, nodeID, pricePerSecond, dockerImage string) (*domain.RentalSession, error) {
 	// Resolve docker image (24-03)
 	resolvedImage, err := m.resolveDockerImage(ctx, dockerImage)
@@ -142,39 +134,27 @@ func (m *SessionManager) CreateSession(ctx context.Context, userAddress, nodeID,
 }
 
 // resolveDockerImage resolves the docker image from user input.
-// Returns the resolved image reference or error.
+// Only preset image IDs (UUIDs) are allowed. Custom image URLs are rejected for security.
 func (m *SessionManager) resolveDockerImage(ctx context.Context, dockerImage string) (string, error) {
 	// If empty, use default image
 	if dockerImage == "" {
 		return domain.DefaultImage, nil
 	}
 
-	// Check if it's a preset ID (UUID)
-	if images.IsPresetID(dockerImage) {
-		// Look up preset in image repository
-		if m.imageRepo == nil {
-			return "", fmt.Errorf("%w: image repository not configured", ErrImageNotFound)
-		}
-		preset, err := m.imageRepo.GetByID(ctx, dockerImage)
-		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrImageNotFound, err)
-		}
-		return preset.DockerImage, nil
+	// Only allow preset IDs (UUID format)
+	if !images.IsPresetID(dockerImage) {
+		return "", fmt.Errorf("%w: custom images are not allowed, please select a preset image", ErrInvalidImage)
 	}
 
-	// Validate custom image format
-	if m.imageValidator != nil {
-		if err := m.imageValidator.ValidateFormat(dockerImage); err != nil {
-			return "", fmt.Errorf("%w: %v", ErrInvalidImage, err)
-		}
-	} else {
-		// Fallback to package-level validation if no validator configured
-		if err := images.ValidateImageFormat(dockerImage); err != nil {
-			return "", fmt.Errorf("%w: %v", ErrInvalidImage, err)
-		}
+	// Look up preset in image repository
+	if m.imageRepo == nil {
+		return "", fmt.Errorf("%w: image repository not configured", ErrImageNotFound)
 	}
-
-	return dockerImage, nil
+	preset, err := m.imageRepo.GetByID(ctx, dockerImage)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrImageNotFound, err)
+	}
+	return preset.DockerImage, nil
 }
 
 // loadAndValidateTransition loads a session and validates the requested state transition
