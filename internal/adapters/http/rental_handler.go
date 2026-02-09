@@ -395,7 +395,7 @@ func (h *RentalHandler) CancelSession(c *gin.Context) {
 
 // StartRentalRequest represents a request to start a rental
 type StartRentalRequest struct {
-	SSHPublicKey string `json:"sshPublicKey" binding:"required"`
+	SSHPublicKey string `json:"sshPublicKey,omitempty"` // Optional, legacy only
 }
 
 // StartRentalResponse represents the response with connection info
