@@ -51,6 +51,11 @@ type RentalSession struct {
 	ExtensionCount       int                `json:"extensionCount"`                 // Number of times extended (16-01)
 	TotalExtendedMinutes int                `json:"totalExtendedMinutes"`           // Total extension duration in minutes (16-01)
 	DockerImage          string             `json:"dockerImage,omitempty"`          // Container image for GPU workload (24-01)
+	// V4: RunPod-style resource selection fields
+	GPUCount             int                `json:"gpuCount"`                       // Number of GPUs requested (default 1)
+	CPUCores             int                `json:"cpuCores"`                       // CPU cores requested (default 4)
+	MemoryGB             int                `json:"memoryGB"`                       // Memory in GB requested (default 16)
+	StorageGB            int                `json:"storageGB"`                      // Storage in GB requested (default 20)
 	CreatedAt            time.Time          `json:"createdAt"`
 	UpdatedAt            time.Time          `json:"updatedAt"`
 }

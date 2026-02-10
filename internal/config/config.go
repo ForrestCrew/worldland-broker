@@ -168,7 +168,7 @@ func LoadConfig() *Config {
 		K8s: K8sConfig{
 			Enabled:        k8sEnabledBool,
 			KubeconfigPath: os.Getenv("KUBECONFIG"),
-			DefaultImage:   getEnv("K8S_DEFAULT_IMAGE", "ubuntu:22.04"),
+			DefaultImage:   getEnv("K8S_DEFAULT_IMAGE", "nvidia/cuda:12.0.0-devel-ubuntu22.04"),
 			ExternalHost:   getEnv("K8S_EXTERNAL_HOST", os.Getenv("K8S_MASTER_IP")), // Default to MasterIP
 			JoinEnabled:    k8sJoinEnabledBool,
 			MasterIP:       os.Getenv("K8S_MASTER_IP"),

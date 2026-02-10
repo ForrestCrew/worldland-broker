@@ -13,6 +13,7 @@ import (
 type ClusterClient struct {
 	Clientset    kubernetes.Interface
 	ExternalHost string // External host/IP for SSH access
+	CACertData   []byte // CA certificate PEM from kubeconfig (for join token hash)
 }
 
 // ExternalClusterRegistry manages K8s clientsets for external provider clusters.
@@ -51,6 +52,7 @@ func (r *ExternalClusterRegistry) RegisterCluster(providerID string, kubeconfigB
 	r.clusters[providerID] = &ClusterClient{
 		Clientset:    clientset,
 		ExternalHost: externalHost,
+		CACertData:   config.TLSClientConfig.CAData,
 	}
 	r.mu.Unlock()
 

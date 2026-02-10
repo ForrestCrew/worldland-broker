@@ -71,6 +71,7 @@ func NewRouterWithConfig(
 		// Public images endpoint (24-03 - no auth required for preset list)
 		if rentalHandler != nil {
 			v1.GET("/images", rentalHandler.ListImages)
+			v1.GET("/gpu-types", rentalHandler.ListGPUTypes) // RunPod-style GPU marketplace
 		}
 
 		// Protected endpoints (require valid session)
@@ -120,16 +121,20 @@ func NewRouterWithConfig(
 				{
 					providers.GET("/me", providerHandler.GetMyProvider)
 					providers.POST("/k8s", providerHandler.RegisterK8sProvider)
+					providers.GET("/:wallet/join-token", providerHandler.GetJoinToken)
 				}
 			}
 
-			// Mining endpoints (Phase 3)
+			// Mining endpoints (Phase 3) — separate path to avoid Gin wildcard conflict
 			if miningHandler != nil {
-				protected.POST("/providers/:id/mining/start", miningHandler.StartMining)
-				protected.POST("/providers/:id/mining/stop", miningHandler.StopMining)
-				protected.POST("/providers/:id/mining/allocate", miningHandler.AllocateMiningGPU)
-				protected.POST("/providers/:id/mining/release", miningHandler.ReleaseMiningGPU)
-				protected.GET("/providers/:id/mining", miningHandler.GetMiningStatus)
+				mining := protected.Group("/mining")
+				{
+					mining.POST("/:id/start", miningHandler.StartMining)
+					mining.POST("/:id/stop", miningHandler.StopMining)
+					mining.POST("/:id/allocate", miningHandler.AllocateMiningGPU)
+					mining.POST("/:id/release", miningHandler.ReleaseMiningGPU)
+					mining.GET("/:id/status", miningHandler.GetMiningStatus)
+				}
 			}
 
 			// Monitoring endpoints (Phase 23)

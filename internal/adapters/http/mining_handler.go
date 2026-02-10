@@ -7,15 +7,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/worldland/worldland-hub/internal/mining"
-	"github.com/worldland/worldland-hub/internal/remote"
 )
 
-// MiningHandler handles mining-related HTTP requests for K8s and SDK providers
+// MiningHandler handles mining-related HTTP requests for K8s providers
 type MiningHandler struct {
-	miningManager    *mining.K8sMiningManager
-	gpuPool          *mining.GPUPool
-	remoteJobManager *remote.JobManager // For SDK node mining status via heartbeat
-	logger           *slog.Logger
+	miningManager *mining.K8sMiningManager
+	gpuPool       *mining.GPUPool
+	logger        *slog.Logger
 }
 
 // NewMiningHandler creates a new mining handler
@@ -29,12 +27,6 @@ func NewMiningHandler(
 		gpuPool:       gpuPool,
 		logger:        logger,
 	}
-}
-
-// WithRemoteJobManager sets the remote job manager for SDK mining status
-func (h *MiningHandler) WithRemoteJobManager(rjm *remote.JobManager) *MiningHandler {
-	h.remoteJobManager = rjm
-	return h
 }
 
 // StartMiningRequest represents a mining start request
@@ -102,32 +94,6 @@ func (h *MiningHandler) GetMiningStatus(c *gin.Context) {
 	// GPU pool allocation
 	allocation := h.gpuPool.GetAllocation(providerID)
 	resp["allocation"] = allocation
-
-	// SDK node mining status (from heartbeat) - filtered by provider's wallet address
-	if h.remoteJobManager != nil {
-		allStatus := h.remoteJobManager.GetAllMiningStatus()
-		sdkNodes := make([]gin.H, 0)
-
-		// Get the provider's wallet address from auth context
-		walletAddress, _ := c.Get("wallet_address")
-		providerWallet, _ := walletAddress.(string)
-
-		for nodeID, ms := range allStatus {
-			// Only include nodes belonging to this provider
-			if providerWallet != "" && nodeID != providerWallet {
-				continue
-			}
-			sdkNodes = append(sdkNodes, gin.H{
-				"nodeId":      nodeID,
-				"state":       ms.State,
-				"containerId": ms.ContainerID,
-				"gpuCount":    ms.GPUCount,
-				"startedAt":   ms.StartedAt,
-				"lastSeen":    ms.LastSeen,
-			})
-		}
-		resp["sdkNodes"] = sdkNodes
-	}
 
 	c.JSON(http.StatusOK, resp)
 }

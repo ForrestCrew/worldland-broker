@@ -11,8 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/worldland/worldland-hub/internal/domain"
-	"github.com/worldland/worldland-hub/internal/k8s"
-	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
 // cleanConfirmPriceString removes decimal points from price strings for BigInt compatibility
@@ -43,14 +41,13 @@ type ConfirmResponse struct {
 }
 
 // ConfirmationHandler handles rental confirmation HTTP requests
+// V4: Uses domain.JobExecutor for K8s-only SSH info retrieval
 type ConfirmationHandler struct {
-	sessionRepo    domain.RentalSessionRepository
-	providerRepo   domain.ProviderRepository
-	nodeRepo       domain.NodeRepository
-	jobManager     *k8s.JobManager            // Can be nil if K8s disabled (legacy)
-	tenantOrch     *k8s.TenantOrchestrator     // Can be nil if K8s disabled (legacy)
-	executorRouter *sessions.ExecutorRouter     // Phase 3: provider-type-aware (can be nil)
-	logger         *slog.Logger
+	sessionRepo  domain.RentalSessionRepository
+	providerRepo domain.ProviderRepository
+	nodeRepo     domain.NodeRepository
+	executor     domain.JobExecutor // K8s executor for SSH info (can be nil)
+	logger       *slog.Logger
 }
 
 // NewConfirmationHandler creates a new confirmation handler
@@ -61,29 +58,20 @@ func NewConfirmationHandler(
 	return &ConfirmationHandler{
 		sessionRepo:  sessionRepo,
 		providerRepo: providerRepo,
-		jobManager:   nil,           // Set via WithK8s for backward compatibility
-		tenantOrch:   nil,           // Set via WithK8s for backward compatibility
-		logger:       slog.Default(), // Use default logger
+		logger:       slog.Default(),
 	}
 }
 
-// WithK8s sets the K8s JobManager and TenantOrchestrator for Pod creation
-func (h *ConfirmationHandler) WithK8s(jobManager *k8s.JobManager) *ConfirmationHandler {
-	h.jobManager = jobManager
+// WithExecutor sets the K8s executor for SSH info retrieval
+func (h *ConfirmationHandler) WithExecutor(executor domain.JobExecutor) *ConfirmationHandler {
+	h.executor = executor
+	h.nodeRepo = nil // nodeRepo not needed when using executor
 	return h
 }
 
-// WithK8sFull sets all K8s dependencies for E2E mode Pod creation
-func (h *ConfirmationHandler) WithK8sFull(jobManager *k8s.JobManager, tenantOrch *k8s.TenantOrchestrator, nodeRepo domain.NodeRepository) *ConfirmationHandler {
-	h.jobManager = jobManager
-	h.tenantOrch = tenantOrch
+// WithNodeRepo sets the node repository (used alongside executor)
+func (h *ConfirmationHandler) WithNodeRepo(nodeRepo domain.NodeRepository) *ConfirmationHandler {
 	h.nodeRepo = nodeRepo
-	return h
-}
-
-// WithExecutorRouter sets the ExecutorRouter for provider-type-aware operations (Phase 3)
-func (h *ConfirmationHandler) WithExecutorRouter(router *sessions.ExecutorRouter) *ConfirmationHandler {
-	h.executorRouter = router
 	return h
 }
 
@@ -298,37 +286,20 @@ func (h *ConfirmationHandler) GetSession(c *gin.Context) {
 		resp.EndTime = &t
 	}
 
-	// If RUNNING, include SSH credentials (Phase 3: provider-type aware)
-	if session.State == domain.RentalStateRunning {
-		if h.executorRouter != nil {
-			sshInfo, err := h.executorRouter.GetSSHConnectionInfo(c.Request.Context(), session)
-			if err != nil {
-				h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
-			} else {
-				resp.SSHHost = sshInfo.Host
-				resp.SSHPort = int(sshInfo.Port)
-				resp.SSHUser = sshInfo.User
-				if resp.SSHUser == "" {
-					resp.SSHUser = "ubuntu"
-				}
-				resp.SSHPassword = sshInfo.Password
-				resp.SSHCommand = fmt.Sprintf("ssh %s@%s -p %d", resp.SSHUser, sshInfo.Host, sshInfo.Port)
+	// If RUNNING, include SSH credentials via K8s executor
+	if session.State == domain.RentalStateRunning && h.executor != nil {
+		sshInfo, err := h.executor.GetSSHConnectionInfo(c.Request.Context(), session)
+		if err != nil {
+			h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
+		} else {
+			resp.SSHHost = sshInfo.Host
+			resp.SSHPort = int(sshInfo.Port)
+			resp.SSHUser = sshInfo.User
+			if resp.SSHUser == "" {
+				resp.SSHUser = "user"
 			}
-		} else if h.jobManager != nil {
-			sshInfo, err := h.jobManager.GetSSHConnectionInfo(
-				c.Request.Context(),
-				session.UserAddress,
-				session.ID,
-			)
-			if err != nil {
-				h.logger.Debug("SSH info not available", "sessionId", session.ID, "error", err)
-			} else {
-				resp.SSHHost = sshInfo.Host
-				resp.SSHPort = int(sshInfo.Port)
-				resp.SSHUser = "ubuntu"
-				resp.SSHPassword = sshInfo.Password
-				resp.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", sshInfo.Host, sshInfo.Port)
-			}
+			resp.SSHPassword = sshInfo.Password
+			resp.SSHCommand = fmt.Sprintf("ssh %s@%s -p %d", resp.SSHUser, sshInfo.Host, sshInfo.Port)
 		}
 	}
 

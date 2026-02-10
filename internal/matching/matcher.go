@@ -35,8 +35,11 @@ type NodeLister interface {
 
 // MatchRequest represents a request to find matching providers
 type MatchRequest struct {
-	GPUType           string // Required - GPU type to match (e.g., "RTX 4090")
+	GPUType           string // Optional - GPU type to match (e.g., "RTX 4090")
+	GPUModel          string // Optional - exact GPU model filter (e.g., "Tesla T4")
+	MinGPUCount       int    // Optional - minimum available GPU count (default 0 = any)
 	MinMemoryGB       int    // Optional - minimum VRAM requirement
+	MinCPUCores       int    // Optional - minimum CPU cores available
 	MaxPricePerSecond string // Optional - maximum price filter
 	SortBy            string // "price" (default), "memory"
 	Limit             int    // Max results (default 20)
@@ -68,17 +71,30 @@ func (m *ProviderMatcher) FindProviders(ctx context.Context, req MatchRequest) (
 		return nil, err
 	}
 
-	// Filter by GPU type (exact match) - skip if empty
+	// Filter by GPU type/model - skip if empty
+	// Always exclude non-GPU nodes (CPU Node, K8s Cluster) from rental discovery
+	// Also exclude GPU nodes with no available GPUs (all rented out)
 	var matched []*domain.Node
-	if req.GPUType == "" {
-		// No GPU type filter - return all active nodes
-		matched = nodes
-	} else {
-		for _, node := range nodes {
-			if node.GPUType == req.GPUType {
-				matched = append(matched, node)
+	for _, node := range nodes {
+		if node.TotalGPUs <= 0 {
+			continue // Skip CPU-only / non-GPU nodes
+		}
+		if node.AvailableGPUs <= 0 {
+			continue // All GPUs currently rented — skip
+		}
+
+		// GPUModel filter takes priority over GPUType
+		if req.GPUModel != "" {
+			if node.GPUModel != req.GPUModel {
+				continue
+			}
+		} else if req.GPUType != "" {
+			if node.GPUType != req.GPUType {
+				continue
 			}
 		}
+
+		matched = append(matched, node)
 	}
 
 	// Apply additional filters
@@ -135,7 +151,7 @@ func paginate(nodes []*domain.Node, limit, offset int) []*domain.Node {
 	return nodes[offset:end]
 }
 
-// applyFilters applies MinMemoryGB and MaxPricePerSecond filters
+// applyFilters applies MinMemoryGB, MinGPUCount, MinCPUCores, and MaxPricePerSecond filters
 func (m *ProviderMatcher) applyFilters(nodes []*domain.Node, req MatchRequest) []*domain.Node {
 	var filtered []*domain.Node
 
@@ -148,6 +164,16 @@ func (m *ProviderMatcher) applyFilters(nodes []*domain.Node, req MatchRequest) [
 	for _, node := range nodes {
 		// Filter by minimum memory
 		if req.MinMemoryGB > 0 && node.MemoryGB < req.MinMemoryGB {
+			continue
+		}
+
+		// Filter by available GPU count
+		if req.MinGPUCount > 0 && node.AvailableGPUs < req.MinGPUCount {
+			continue
+		}
+
+		// Filter by minimum CPU cores
+		if req.MinCPUCores > 0 && node.TotalCPUCores < req.MinCPUCores {
 			continue
 		}
 

@@ -48,6 +48,8 @@ type RegisterNodeInput struct {
 	MemoryGB     int
 	PricePerSec  string // Decimal string for wei precision
 	APIEndpoint  string // Node's mTLS endpoint (auto-detected from request IP)
+	GPUModel     string // NVML model name (e.g. "Tesla T4")
+	VramMB       int    // GPU VRAM in MB
 }
 
 // RegisterNode creates a new node registration for a provider
@@ -120,6 +122,8 @@ func (s *NodeService) RegisterNode(ctx context.Context, input RegisterNodeInput)
 		PricePerSecond: input.PricePerSec,
 		APIEndpoint:    input.APIEndpoint,
 		Status:         domain.NodeStatusActive, // Active since node is connecting
+		GPUModel:       input.GPUModel,
+		VramMB:         input.VramMB,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -281,6 +285,63 @@ func (s *NodeService) AutoRegisterNode(ctx context.Context, input AutoRegisterNo
 	}
 
 	return node, nil
+}
+
+// HeartbeatPayload represents the payload from an SDK heartbeat message
+type HeartbeatPayload struct {
+	GPUMetrics []struct {
+		UUID        string `json:"uuid"`
+		Name        string `json:"name"`
+		MemoryTotal uint64 `json:"memory_total_mb"`
+		GPUUtil     uint32 `json:"gpu_util_percent"`
+		Temperature uint32 `json:"temperature_c"`
+	} `json:"gpu_metrics"`
+	Mode string `json:"mode"` // "master" or "worker"
+}
+
+// ProcessHeartbeat updates node status and metrics from an SDK heartbeat
+func (s *NodeService) ProcessHeartbeat(ctx context.Context, nodeID string, payload HeartbeatPayload) {
+	// Look up all nodes for this provider (nodeID is wallet address from mTLS CN)
+	if s.providerRepo == nil {
+		return
+	}
+
+	provider, err := s.providerRepo.GetByWallet(ctx, nodeID)
+	if err != nil || provider == nil {
+		return
+	}
+
+	nodes, err := s.nodeRepo.GetByProvider(ctx, provider.ID)
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+
+	// Extract GPU model from heartbeat metrics
+	var hbGPUModel string
+	var hbVramMB int
+	if len(payload.GPUMetrics) > 0 {
+		hbGPUModel = payload.GPUMetrics[0].Name
+		hbVramMB = int(payload.GPUMetrics[0].MemoryTotal)
+	}
+
+	// Update heartbeat timestamp for all provider nodes
+	now := time.Now()
+	for _, node := range nodes {
+		if node.Status != domain.NodeStatusActive {
+			node.Status = domain.NodeStatusActive
+		}
+		node.UpdatedAt = now
+
+		// Update GPU model/VRAM if heartbeat has better data
+		if hbGPUModel != "" && (node.GPUModel == "" || strings.HasPrefix(node.GPUModel, "GPU x")) {
+			node.GPUModel = hbGPUModel
+			if hbVramMB > 0 {
+				node.VramMB = hbVramMB
+			}
+		}
+
+		s.nodeRepo.Update(ctx, node)
+	}
 }
 
 // MarkNodeOffline marks a node as offline when it disconnects

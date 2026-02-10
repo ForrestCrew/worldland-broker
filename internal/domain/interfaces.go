@@ -21,6 +21,7 @@ type NodeRepository interface {
 	GetByGPUUUID(ctx context.Context, gpuUUID string) (*Node, error) // For duplicate prevention
 	GetByProvider(ctx context.Context, providerID string) ([]*Node, error)
 	ListActive(ctx context.Context) ([]*Node, error) // For discovery endpoints (Phase 27)
+	ListActiveGroupedByGPU(ctx context.Context) ([]*GPUTypeGroup, error) // For RunPod-style marketplace
 	Update(ctx context.Context, node *Node) error
 	Delete(ctx context.Context, id string) error
 }

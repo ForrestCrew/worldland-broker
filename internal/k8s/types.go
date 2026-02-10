@@ -13,6 +13,8 @@ const (
 	LabelSessionID  = "worldland.io/session-id"
 	LabelProviderID = "worldland.io/provider-id"
 	LabelGPURental  = "worldland.io/gpu-rental"
+	LabelGPUModel   = "worldland.io/gpu-model"
+	LabelRentalType = "worldland.io/rental-type" // Node label for GPU rental scheduling
 )
 
 // Annotation constants
@@ -20,21 +22,32 @@ const (
 	AnnotationExpiresAt   = "worldland.io/expires-at"
 	AnnotationUserAddress = "worldland.io/user-address"
 	AnnotationGPUModel    = "worldland.io/gpu-model"
+	AnnotationPricePerHr  = "worldland.io/price-per-hour"
+	AnnotationPublicIP    = "worldland.io/public-ip"
+	AnnotationStorageGB   = "worldland.io/storage-gb"
+)
+
+// Taint constants (from proxy: provider/types.go)
+const (
+	TaintDedicatedRental = "worldland.io/dedicated-rental"
+	TaintGPUFull         = "worldland.io/gpu-full"
 )
 
 // GPUJobSpec contains parameters for creating a GPU Pod
+// V4: Uses int-based resource specs with QoS Guaranteed (requests == limits)
 type GPUJobSpec struct {
-	SessionID     string
-	UserAddress   string
-	ProviderID    string
-	GPUCount      int
-	GPUModel      string
-	Image         string
-	CPURequest    string    // e.g., "4"
-	MemoryRequest string    // e.g., "16Gi"
-	CPULimit      string    // e.g., "8"
-	MemoryLimit   string    // e.g., "32Gi"
-	ExpiresAt     time.Time
+	SessionID    string
+	UserAddress  string
+	ProviderID   string
+	GPUCount     int
+	GPUModel     string
+	Image        string
+	CPUCores     int       // e.g., 4 (cores)
+	MemoryGB     int       // e.g., 16 (GB)
+	StorageGB    int       // e.g., 50 (GB)
+	ExpiresAt    time.Time
+	NodeHostname string // K8s node hostname for scheduling (from proxy: buildNodeSelector)
+	PricePerHour float64
 }
 
 // SSHConnectionInfo contains SSH connection details for a session
@@ -68,3 +81,5 @@ func PodName(sessionID string) string {
 func SSHServiceName(sessionID string) string {
 	return fmt.Sprintf("ssh-%s", sessionID)
 }
+
+// Note: SSHSecretName is defined in password.go

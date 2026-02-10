@@ -32,6 +32,8 @@ func createTestNode(id, gpuType string, memoryGB int, pricePerSecond string, sta
 		MemoryGB:       memoryGB,
 		PricePerSecond: pricePerSecond,
 		Status:         status,
+		TotalGPUs:      1,
+		AvailableGPUs:  1,
 	}
 }
 

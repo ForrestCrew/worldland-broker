@@ -27,10 +27,10 @@ func (r *PostgresProviderRepository) Create(ctx context.Context, provider *domai
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Default provider_type to "docker" if not set
+	// Default provider_type to "k8s" (V4: K8s only)
 	providerType := provider.ProviderType
 	if providerType == "" {
-		providerType = domain.ProviderTypeDocker
+		providerType = domain.ProviderTypeK8s
 	}
 
 	query := `

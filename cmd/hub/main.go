@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -27,14 +27,12 @@ import (
 	"github.com/worldland/worldland-hub/internal/auth"
 	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/config"
-	"github.com/worldland/worldland-hub/internal/indexer"
 	"github.com/worldland/worldland-hub/internal/domain"
+	"github.com/worldland/worldland-hub/internal/indexer"
 	"github.com/worldland/worldland-hub/internal/k8s"
 	"github.com/worldland/worldland-hub/internal/matching"
 	"github.com/worldland/worldland-hub/internal/mining"
 	"github.com/worldland/worldland-hub/internal/monitoring"
-	"github.com/worldland/worldland-hub/internal/remote"
-	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/services"
 	"github.com/worldland/worldland-hub/internal/sessions"
 	"github.com/worldland/worldland-hub/internal/settlement"
@@ -47,7 +45,7 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	logger.Info("Worldland Hub starting...")
+	logger.Info("Worldland Hub V4 starting (K8s-only architecture)...")
 
 	// Load configuration
 	cfg := config.LoadConfig()
@@ -56,19 +54,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize K8s client (Phase 22)
+	// Initialize legacy K8s client (for single-cluster mode)
 	var jobManager *k8s.JobManager
 	var tenantOrch *k8s.TenantOrchestrator
 	var podWatcher *k8s.PodWatcher
 	var metricsCollector *k8s.MetricsCollector
 
-	// K8s join service removed in V3 - nodes use Docker directly
-	// External providers don't need kubeadm join
-
 	if cfg.K8s.Enabled {
 		k8sManager := k8s.GetManager()
 
-		// Initialize clientset
 		var initErr error
 		if cfg.K8s.KubeconfigPath != "" {
 			initErr = k8sManager.InitFromKubeconfig(cfg.K8s.KubeconfigPath, logger)
@@ -78,19 +72,15 @@ func main() {
 
 		if initErr != nil {
 			logger.Error("Failed to initialize K8s client", "error", initErr)
-			// Non-fatal: K8s is optional
 		} else {
 			clientset, _ := k8sManager.GetClientset()
 
-			// Create K8s components
 			jobManager = k8s.NewJobManager(clientset, logger).WithExternalHost(cfg.K8s.ExternalHost)
 			tenantOrch = k8s.NewTenantOrchestrator(clientset, logger)
 
-			// Create MetricsCollector (Phase 23) using same rest.Config
 			restConfig := k8sManager.GetConfig()
 			mc, err := k8s.NewMetricsCollector(restConfig, logger)
 			if err != nil {
-				// Non-fatal: metrics unavailable but K8s works
 				logger.Warn("Failed to create metrics collector", "error", err)
 			} else {
 				metricsCollector = mc
@@ -131,7 +121,6 @@ func main() {
 	sessionManager := auth.NewSessionManager(sessionRepo, cfg.SessionTTL)
 
 	// Initialize services
-	// Use provider-aware node service for mTLS auto-registration (Phase 27)
 	nodeService := services.NewNodeServiceWithProvider(nodeRepo, providerRepo)
 
 	// Initialize certificate service
@@ -149,26 +138,22 @@ func main() {
 	rentalSessionManager := sessions.NewSessionManager(rentalSessionRepo, nodeRepo, providerRepo)
 	providerMatcher := matching.NewProviderMatcher(nodeRepo)
 
-	// Initialize PodWatcher early so MonitoringService can use it (Phase 23)
-	// The watcher will be started later in a goroutine
+	// Initialize PodWatcher early so MonitoringService can use it
 	if jobManager != nil {
-		// Create K8s state handler (from sessions package)
 		k8sStateHandler := sessions.NewK8sStateHandler(
 			rentalSessionManager,
 			rentalSessionRepo,
 			logger,
 		)
-		// Get clientset for watcher
 		clientset, _ := k8s.GetManager().GetClientset()
 		podWatcher = k8s.NewPodWatcher(clientset, k8sStateHandler, logger)
 	}
 
 	// Initialize blockchain components
-	// Hub uses 'rental_events' checkpoint; standalone indexer uses 'indexer_events'
 	checkpointStore := blockchain.NewCheckpointStore(dbPool, "rental_events")
-	eventProcessor := blockchain.NewEventProcessor(rentalSessionManager, rentalSessionRepo, logger).WithK8s(jobManager)
+	eventProcessor := blockchain.NewEventProcessor(rentalSessionManager, rentalSessionRepo, logger)
 
-	// Initialize event listener (if enabled and contract address configured)
+	// Initialize event listener
 	var eventListener *blockchain.EventListener
 	if cfg.Blockchain.ListenerEnabled && cfg.Blockchain.ContractAddress != "" {
 		contractAddr := common.HexToAddress(cfg.Blockchain.ContractAddress)
@@ -190,15 +175,12 @@ func main() {
 		)
 	}
 
-	// Initialize timeout enforcer for stale session cleanup
-	// rentalSessionRepo implements SoftDeleter via SoftDeletePendingBefore (Phase 14)
+	// Initialize timeout enforcer
 	timeoutEnforcer := sessions.NewTimeoutEnforcer(rentalSessionManager, rentalSessionRepo, rentalSessionRepo, logger)
 
-	// Initialize settlement calculator and batch processor (04-07)
+	// Initialize settlement calculator and batch processor
 	settlementCalculator := settlement.NewCalculator(rentalSessionRepo)
-	// TODO (DEBT-03): Implement ContractTransferer when contract SDK available
-	// For now, pass nil - blockchain transfer is optional, DB is source of truth
-	var contractTransferer settlement.ContractTransferer // nil
+	var contractTransferer settlement.ContractTransferer
 	if contractTransferer != nil {
 		logger.Info("Blockchain settlement transfer enabled")
 	} else {
@@ -211,32 +193,18 @@ func main() {
 		logger,
 	)
 
-	// Initialize Node client for Hub-to-Node communication (04-05)
-	// Load mTLS certificates for secure Hub-to-Node communication (DEBT-01)
-	nodeTLSConfig, err := loadNodeClientTLS(cfg, logger)
-	if err != nil {
-		logger.Error("Failed to load Node client TLS config", "error", err)
-		os.Exit(1)
-	}
-	nodeClient := rental.NewNodeClient(rental.NodeClientConfig{
-		TLSConfig: nodeTLSConfig,
-		Timeout:   2 * time.Minute,
-	})
-
-	// Initialize balance validator and transaction verifier for on-chain checks (06-06, 14-03)
+	// Initialize balance validator and transaction verifier
 	var balanceValidator blockchain.BalanceValidatorInterface
 	var transactionVerifier *blockchain.TransactionVerifier
 	if cfg.Blockchain.ContractAddress != "" && cfg.Blockchain.HTTPRPCEndpoint != "" {
 		ethClient, err := ethclient.Dial(cfg.Blockchain.HTTPRPCEndpoint)
 		if err != nil {
 			logger.Error("Failed to connect to Ethereum RPC", "error", err)
-			// Non-fatal: balance validation and tx verification will be skipped
 		} else {
 			contractAddr := common.HexToAddress(cfg.Blockchain.ContractAddress)
 			balanceValidator, err = blockchain.NewBalanceValidator(ethClient, contractAddr)
 			if err != nil {
 				logger.Error("Failed to create balance validator", "error", err)
-				// Non-fatal: balance validation will be skipped
 			} else {
 				logger.Info("Balance validator initialized",
 					"contract", cfg.Blockchain.ContractAddress,
@@ -244,55 +212,44 @@ func main() {
 				)
 			}
 
-			// Initialize transaction verifier for confirmation worker (14-03 ADR-001)
 			transactionVerifier = blockchain.NewTransactionVerifier(ethClient, contractAddr)
 			logger.Info("Transaction verifier initialized",
 				"contract", cfg.Blockchain.ContractAddress,
 			)
 		}
 	} else {
-		logger.Warn("Balance validator and transaction verifier disabled (no contract address or HTTP RPC endpoint configured)")
+		logger.Warn("Balance validator and transaction verifier disabled")
 	}
 
-	// Initialize image repository for preset images
+	// Initialize image repository
 	imageRepo := postgres.NewImageRepository(dbPool)
 
-	// Initialize HTTP handlers
+	// Initialize HTTP handlers (V4: no nodeClient or remote dependencies)
 	authHandler := httpAdapter.NewAuthHandler(siweVerifier, sessionManager, nonceRepo, providerRepo)
 	nodeHandler := httpAdapter.NewNodeHandler(nodeService)
 	certHandler := httpAdapter.NewCertHandler(certService)
-	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, nodeClient, balanceValidator)
+	rentalHandler := httpAdapter.NewRentalHandler(providerMatcher, rentalSessionManager, rentalSessionRepo, providerRepo, nodeRepo, balanceValidator)
 
-	// Wire image repository to rental handler and session manager
+	// Wire image repository
 	rentalHandler = rentalHandler.WithImageRepository(imageRepo)
 	rentalSessionManager = rentalSessionManager.WithImageRepository(imageRepo)
 
-	// Wire K8s integration to rental handler if enabled
-	if jobManager != nil {
-		rentalHandler = rentalHandler.WithK8s(jobManager)
-	}
-
-	// Initialize confirmation handler (14-03 ADR-001)
+	// Initialize confirmation handler
 	confirmationHandler := httpAdapter.NewConfirmationHandler(rentalSessionRepo, providerRepo)
-
-	// Wire K8s integration to confirmation handler if enabled (Phase 22)
-	if jobManager != nil {
-		confirmationHandler = confirmationHandler.WithK8s(jobManager)
-	}
 
 	balanceHandler := httpAdapter.NewBalanceHandler(settlementCalculator, rentalSessionRepo, providerRepo)
 
-	// Initialize query repository and history handler (09-04)
+	// Initialize query repository and history handler
 	queryRepo := indexer.NewQueryRepository(dbPool)
 	historyHandler := httpAdapter.NewHistoryHandler(queryRepo)
 
-	// Initialize MonitoringService and handler (Phase 23)
+	// Initialize MonitoringService and handler
 	var monitoringHandler *httpAdapter.MonitoringHandler
 	if tenantOrch != nil {
 		monitoringService := monitoring.NewMonitoringService(
 			tenantOrch,
-			metricsCollector, // Can be nil if Metrics Server unavailable
-			podWatcher,       // Can be nil if K8s disabled
+			metricsCollector,
+			podWatcher,
 			logger,
 		)
 		monitoringHandler = httpAdapter.NewMonitoringHandler(monitoringService, logger)
@@ -306,19 +263,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize Remote JobManager for Docker-based providers (V3)
-	remoteJobManager := remote.NewJobManager(mtlsServer, logger)
-
-	// Wire SSH persistence so credentials survive Hub restart
-	sshAdapter := remote.NewRentalRepoSSHAdapter(rentalSessionRepo)
-	remoteJobManager.WithSSHPersister(sshAdapter)
-	if err := remoteJobManager.RestoreSSHCredentials(ctx); err != nil {
-		logger.Warn("Failed to restore SSH credentials from DB", "error", err)
-	}
-
-	// Phase 3: Initialize ExternalClusterRegistry and ExecutorRouter
+	// V4: ExternalClusterRegistry is the single K8s executor path
 	clusterRegistry := k8s.NewExternalClusterRegistry(logger)
-	var executorRouter *sessions.ExecutorRouter
+	var k8sExecutor *k8s.K8sJobExecutor
 	var providerHandler *httpAdapter.ProviderHandler
 	var miningHandler *httpAdapter.MiningHandler
 
@@ -341,42 +288,88 @@ func main() {
 			logger.Info("Loaded external K8s providers", "count", len(k8sProviders))
 		}
 
-		// Create executor adapters
-		dockerExecutor := remote.NewRemoteJobExecutor(remoteJobManager, nodeRepo, logger).WithProviderRepo(providerRepo)
-		k8sExecutor := k8s.NewK8sJobExecutor(clusterRegistry, logger, cfg.K8s.DefaultImage).WithNodeRepo(nodeRepo)
+		// V4: Single K8s executor (no Docker executor)
+		capacityTracker := k8s.NewCapacityTracker(clusterRegistry, nodeRepo, logger)
+		k8sExecutor = k8s.NewK8sJobExecutor(clusterRegistry, logger, cfg.K8s.DefaultImage).
+			WithNodeRepo(nodeRepo).
+			WithCapacityTracker(capacityTracker)
 
-		// Create ExecutorRouter
-		executorRouter = sessions.NewExecutorRouter(
-			providerRepo, nodeRepo, dockerExecutor, k8sExecutor, logger,
-		)
+		// Discover initial capacity for all registered clusters
+		for _, pid := range clusterRegistry.ListProviderIDs() {
+			if err := capacityTracker.DiscoverCapacity(ctx, pid); err != nil {
+				logger.Warn("Failed to discover initial capacity", "providerID", pid, "error", err)
+			}
+		}
+		// Start periodic capacity sync (every 2 minutes)
+		capacityTracker.StartPeriodicSync(ctx, 2*time.Minute)
 
-		// Wire ExecutorRouter to event processor
-		eventProcessor.WithCleanup(executorRouter)
+		// Start periodic K8s node sync (auto-registers new worker nodes in DB)
+		nodeSyncWorker := k8s.NewNodeSyncWorker(clusterRegistry, nodeRepo, logger, 2*time.Minute)
+		go func() {
+			logger.Info("Starting K8s node sync worker")
+			if err := nodeSyncWorker.Start(ctx); err != nil && err != context.Canceled {
+				logger.Error("K8s node sync worker error", "error", err)
+			}
+		}()
 
-		// Wire ExecutorRouter to handlers
-		rentalHandler = rentalHandler.WithExecutorRouter(executorRouter)
-		confirmationHandler = confirmationHandler.WithExecutorRouter(executorRouter)
+		// Wire K8s executor as cleanup handler for event processor
+		eventProcessor.WithCleanup(k8sExecutor)
 
-		// Create provider handler for K8s provider registration (with node repo for GPU auto-discovery)
+		// Wire K8s executor to handlers
+		rentalHandler = rentalHandler.WithExecutor(k8sExecutor)
+		confirmationHandler = confirmationHandler.WithExecutor(k8sExecutor)
+
+		// Create provider handler
 		providerHandler = httpAdapter.NewProviderHandler(providerRepo, clusterRegistry, logger).WithNodeRepo(nodeRepo)
 
-		// Create mining handler with GPU auto-discovery
+		// Create mining handler
 		gpuPool := mining.NewGPUPool()
 		miningManager := mining.NewK8sMiningManager(clusterRegistry, providerRepo, logger).WithGPUPool(gpuPool)
 		miningManager.DiscoverGPUs(ctx)
-		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger).WithRemoteJobManager(remoteJobManager)
+		miningHandler = httpAdapter.NewMiningHandler(miningManager, gpuPool, logger)
 
-		logger.Info("Phase 3: External providers enabled",
+		// Recover resource allocations from running Pods (proxy pattern: RecoverJobAllocations on startup)
+		if err := capacityTracker.RecoverAllocations(ctx); err != nil {
+			logger.Warn("Failed to recover resource allocations", "error", err)
+		}
+
+		// Start Pod expiration monitor (safety net for missed session cleanup)
+		expirationMonitor := k8s.NewExpirationMonitor(clusterRegistry, capacityTracker, logger)
+		go func() {
+			logger.Info("Starting Pod expiration monitor")
+			if err := expirationMonitor.Start(ctx, 1*time.Minute); err != nil && err != context.Canceled {
+				logger.Error("Pod expiration monitor error", "error", err)
+			}
+			logger.Info("Pod expiration monitor stopped")
+		}()
+
+		// Multi-cluster PodWatcher: monitors GPU rental Pods across all registered clusters
+		k8sStateHandler := sessions.NewK8sStateHandler(
+			rentalSessionManager,
+			rentalSessionRepo,
+			logger,
+		)
+		// Set executor so OnPodFailed can clean up K8s resources and release capacity
+		if k8sExecutor != nil {
+			k8sStateHandler.SetExecutor(k8sExecutor)
+		}
+		multiWatcher := k8s.NewMultiClusterWatcher(clusterRegistry, k8sStateHandler, logger)
+		multiWatcher.StartAll(ctx)
+		logger.Info("Multi-cluster pod watchers started",
+			"count", multiWatcher.WatcherCount(),
+		)
+
+		logger.Info("V4: K8s-only external providers enabled",
 			"k8sClusters", len(clusterRegistry.ListProviderIDs()),
 		)
 	} else {
-		logger.Info("Phase 3: External providers disabled")
+		logger.Info("V4: External providers disabled")
 	}
 
-	// Create router with configuration
+	// Create router
 	routerCfg := httpAdapter.RouterConfig{
 		AuthDisabled: cfg.AuthDisabled,
-		ProviderRepo: providerRepo, // For wallet address lookup in auth_disabled mode
+		ProviderRepo: providerRepo,
 	}
 	if cfg.AuthDisabled {
 		logger.Warn("AUTH_DISABLED is true - authentication is bypassed (for E2E testing only)")
@@ -397,34 +390,40 @@ func main() {
 		}
 	}()
 
-	// Wire CommandAck response handler - Hub processes node responses
-	// Remote JobManager handles command acks and container state updates
+	// V4: mTLS OnMessage processes SDK heartbeats for node status updates
 	mtlsServer.OnMessage = func(nodeID string, msg []byte) {
-		// Delegate to remote job manager for command ack processing
-		remoteJobManager.HandleNodeMessage(nodeID, msg)
+		var envelope struct {
+			Type    string                   `json:"type"`
+			Payload services.HeartbeatPayload `json:"payload"`
+		}
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			logger.Debug("failed to parse mTLS message", "nodeID", nodeID, "error", err)
+			return
+		}
+
+		if envelope.Type == "heartbeat" {
+			nodeService.ProcessHeartbeat(ctx, nodeID, envelope.Payload)
+		}
 	}
 
-	// Wire auto-registration handler - register node when it connects via mTLS
+	// V4: mTLS OnNodeConnected registers the SDK master node
 	mtlsServer.OnNodeConnected = func(nodeID string) {
-		logger.Info("Node connected via mTLS, auto-registering", "nodeID", nodeID)
+		logger.Info("SDK node connected via mTLS", "nodeID", nodeID)
 		input := services.AutoRegisterNodeInput{
 			NodeID:      nodeID,
-			GPUType:     "NVIDIA RTX 4090", // Default, will be updated by node heartbeat
-			MemoryGB:    24,                // Default
-			PricePerSec: "1000000000",      // 1 Gwei per second
-			APIEndpoint: fmt.Sprintf("https://%s:8444", nodeID),
+			GPUType:     "K8s Cluster",
+			MemoryGB:    0,
+			PricePerSec: "1000000000",
+			APIEndpoint: "", // V4: No API endpoint — K8s managed
 		}
 		if _, err := nodeService.AutoRegisterNode(ctx, input); err != nil {
-			logger.Error("Failed to auto-register node", "nodeID", nodeID, "error", err)
+			logger.Error("Failed to auto-register SDK node", "nodeID", nodeID, "error", err)
 		} else {
-			logger.Info("Node auto-registered successfully", "nodeID", nodeID)
+			logger.Info("SDK node auto-registered", "nodeID", nodeID)
 		}
-
-		// K8s join is no longer sent in V3 - nodes use Docker directly
-		// External providers don't need to join a K8s cluster
 	}
 
-	// Wire node disconnect handler - mark node as offline (Phase 27)
+	// Wire node disconnect handler
 	mtlsServer.OnNodeDisconnected = func(nodeID string) {
 		logger.Info("Node disconnected", "nodeID", nodeID)
 		if err := nodeService.MarkNodeOffline(ctx, nodeID); err != nil {
@@ -442,20 +441,9 @@ func main() {
 
 	// Initialize command service
 	commandService := services.NewCommandService(mtlsServer)
-	_ = commandService // Available for direct mTLS commands
-
-	// Initialize Remote state handler for Docker-based providers (V3)
-	// This bridges container state updates from nodes to the session manager
-	remoteStateHandler := sessions.NewRemoteStateHandler(
-		rentalSessionManager,
-		rentalSessionRepo,
-		logger,
-	)
-	remoteStateReceiver := remote.NewStateReceiver(remoteStateHandler, remoteJobManager, logger)
-	_ = remoteStateReceiver // Used when nodes send container state updates
+	_ = commandService
 
 	// Start background services
-	// Event listener (if enabled)
 	if eventListener != nil {
 		go func() {
 			logger.Info("Starting event listener")
@@ -466,7 +454,6 @@ func main() {
 		}()
 	}
 
-	// Timeout enforcer (always runs)
 	go func() {
 		logger.Info("Starting timeout enforcer")
 		if err := timeoutEnforcer.Start(ctx); err != nil && err != context.Canceled {
@@ -475,31 +462,27 @@ func main() {
 		logger.Info("Timeout enforcer stopped")
 	}()
 
-	// Batch settlement processor (always runs - 04-07)
 	go func() {
 		logger.Info("Starting batch settlement processor")
 		batchProcessor.Start(ctx)
 		logger.Info("Batch settlement processor stopped")
 	}()
 
-	// Confirmation worker for processing pending txHash verifications (14-03 ADR-001)
+	// V4: Confirmation worker uses single K8s executor
 	if transactionVerifier != nil {
+		var executor domain.JobExecutor
+		if k8sExecutor != nil {
+			executor = k8sExecutor
+		}
+
 		confirmationWorker := sessions.NewConfirmationWorker(
 			rentalSessionRepo,
 			transactionVerifier,
 			rentalSessionManager,
-			nodeClient,
 			nodeRepo,
+			executor,
 			logger,
-		)
-
-		// Phase 3: Wire ExecutorRouter if available
-		if executorRouter != nil {
-			confirmationWorker = confirmationWorker.WithExecutorRouter(executorRouter)
-		} else if jobManager != nil && tenantOrch != nil {
-			// Legacy: Wire K8s integration if enabled (Phase 22)
-			confirmationWorker = confirmationWorker.WithK8s(jobManager, tenantOrch, cfg.K8s.DefaultImage)
-		}
+		).WithDefaultImage(cfg.K8s.DefaultImage)
 
 		go func() {
 			logger.Info("Starting confirmation worker")
@@ -512,18 +495,18 @@ func main() {
 		logger.Warn("Confirmation worker disabled (no transaction verifier)")
 	}
 
-	// Expiration worker for auto-terminating extended sessions (16-03)
+	// V4: Expiration worker uses single K8s executor
+	var expirationExecutor domain.JobExecutor
+	if k8sExecutor != nil {
+		expirationExecutor = k8sExecutor
+	}
 	expirationWorker := sessions.NewExpirationWorker(
 		rentalSessionRepo,
 		rentalSessionManager,
-		nodeClient,
 		nodeRepo,
+		expirationExecutor,
 		logger,
 	)
-	// Phase 3: Wire ExecutorRouter if available
-	if executorRouter != nil {
-		expirationWorker = expirationWorker.WithExecutorRouter(executorRouter)
-	}
 	go func() {
 		logger.Info("Starting expiration worker")
 		if err := expirationWorker.Start(ctx); err != nil && err != context.Canceled {
@@ -532,8 +515,7 @@ func main() {
 		logger.Info("Expiration worker stopped")
 	}()
 
-	// Start K8s PodWatcher if K8s enabled (Phase 22)
-	// Note: PodWatcher was created earlier (with MonitoringService dependencies)
+	// Start K8s PodWatcher if enabled
 	if podWatcher != nil {
 		go func() {
 			logger.Info("Starting K8s pod watcher")
@@ -544,11 +526,12 @@ func main() {
 		}()
 	}
 
-	logger.Info("Hub fully initialized",
+	logger.Info("Hub V4 fully initialized",
 		"httpPort", cfg.ServerPort,
 		"mtlsPort", cfg.MTLSPort,
 		"blockchainListener", eventListener != nil,
 		"k8sIntegration", jobManager != nil,
+		"externalProviders", cfg.ExternalProvidersEnabled,
 	)
 
 	// Graceful shutdown
@@ -559,33 +542,25 @@ func main() {
 	logger.Info("Received shutdown signal", "signal", sig)
 	logger.Info("Shutting down...")
 
-	// Cancel context to stop background services
 	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	// Graceful shutdown ordering:
-	// 1. Stop HTTP server (no new requests)
 	httpServer.Shutdown(shutdownCtx)
 
-	// 2. Stop batch processor (finish pending settlements)
 	logger.Info("stopping batch processor...")
 	batchProcessor.Stop()
 
-	// 3. Stop mTLS server
 	mtlsServer.Stop()
 
 	logger.Info("Shutdown complete")
 }
 
 // initCertService initializes the certificate service
-// For development, generates a self-signed CA if certs don't exist
 func initCertService(cfg *config.Config, nodeRepo domain.NodeRepository, logger *slog.Logger) (*services.CertService, error) {
-	// Try to load CA certificate and key
 	caCertPEM, err := os.ReadFile(cfg.CACertPath)
 	if err != nil {
-		// For development, generate self-signed CA
 		logger.Warn("CA cert not found, generating self-signed CA for development")
 		return initDevCertService(nodeRepo, cfg.CertTTL, logger)
 	}
@@ -601,13 +576,11 @@ func initCertService(cfg *config.Config, nodeRepo domain.NodeRepository, logger 
 
 // initDevCertService generates a self-signed CA for development
 func initDevCertService(nodeRepo domain.NodeRepository, ttl time.Duration, logger *slog.Logger) (*services.CertService, error) {
-	// Generate CA key pair
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create CA certificate
 	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	caCertTemplate := x509.Certificate{
 		SerialNumber: serialNumber,
@@ -636,12 +609,9 @@ func initDevCertService(nodeRepo domain.NodeRepository, ttl time.Duration, logge
 }
 
 // initMTLSServer initializes the mTLS server
-// For development, generates a self-signed server cert if not found
 func initMTLSServer(cfg *config.Config, certService *services.CertService, logger *slog.Logger) (*mtls.Server, error) {
-	// Try to load server certificate for mTLS
 	serverCert, err := tls.LoadX509KeyPair(cfg.MTLSCertPath, cfg.MTLSKeyPath)
 	if err != nil {
-		// For development, use cert service to generate
 		logger.Warn("mTLS server cert not found, generating for development")
 		serverCert, err = generateDevServerCert()
 		if err != nil {
@@ -649,7 +619,6 @@ func initMTLSServer(cfg *config.Config, certService *services.CertService, logge
 		}
 	}
 
-	// Get CA cert pool
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(certService.GetRootCA())
 
@@ -658,7 +627,6 @@ func initMTLSServer(cfg *config.Config, certService *services.CertService, logge
 
 // generateDevServerCert generates a self-signed server certificate for development
 func generateDevServerCert() (tls.Certificate, error) {
-	// Generate key pair
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
@@ -686,58 +654,6 @@ func generateDevServerCert() (tls.Certificate, error) {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	return tls.X509KeyPair(certPEM, keyPEM)
-}
-
-// loadNodeClientTLS loads mTLS configuration for Hub-to-Node communication (DEBT-01)
-// Returns nil TLSConfig in development mode (when cert files don't exist)
-func loadNodeClientTLS(cfg *config.Config, logger *slog.Logger) (*tls.Config, error) {
-	// Check if certificate files exist
-	certExists := fileExists(cfg.NodeClientCertPath)
-	keyExists := fileExists(cfg.NodeClientKeyPath)
-	caExists := fileExists(cfg.CACertPath)
-
-	// Development mode fallback: if certs don't exist, use nil TLSConfig
-	if !certExists || !keyExists || !caExists {
-		logger.Warn("Node client mTLS certs not found, using insecure connection for development",
-			"certPath", cfg.NodeClientCertPath,
-			"keyPath", cfg.NodeClientKeyPath,
-			"caPath", cfg.CACertPath,
-			"certExists", certExists,
-			"keyExists", keyExists,
-			"caExists", caExists,
-		)
-		return nil, nil
-	}
-
-	// Load client certificate
-	cert, err := tls.LoadX509KeyPair(cfg.NodeClientCertPath, cfg.NodeClientKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("load client certificate: %w", err)
-	}
-
-	// Load CA certificate pool
-	caCertPEM, err := os.ReadFile(cfg.CACertPath)
-	if err != nil {
-		return nil, fmt.Errorf("read CA certificate: %w", err)
-	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-		return nil, fmt.Errorf("failed to parse CA certificate")
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-		MinVersion:   tls.VersionTLS13, // Per Phase 2 decision
-	}
-
-	logger.Info("Node client mTLS configured",
-		"certPath", cfg.NodeClientCertPath,
-		"caPath", cfg.CACertPath,
-	)
-
-	return tlsConfig, nil
 }
 
 // fileExists checks if a file exists and is not a directory

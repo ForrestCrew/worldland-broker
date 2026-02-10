@@ -15,6 +15,7 @@ import (
 type K8sStateHandler struct {
 	sessionManager *SessionManager
 	sessionRepo    domain.RentalSessionRepository
+	executor       domain.JobExecutor
 	logger         *slog.Logger
 }
 
@@ -29,6 +30,11 @@ func NewK8sStateHandler(
 		sessionRepo:    sessionRepo,
 		logger:         logger,
 	}
+}
+
+// SetExecutor sets the JobExecutor for Pod cleanup on failure
+func (h *K8sStateHandler) SetExecutor(executor domain.JobExecutor) {
+	h.executor = executor
 }
 
 // Ensure K8sStateHandler implements StateChangeHandler interface
@@ -112,7 +118,7 @@ func (h *K8sStateHandler) OnPodFailed(ctx context.Context, sessionID string, rea
 		return nil
 	}
 
-	// If RUNNING or PENDING, transition to FAILED
+	// If RUNNING or PENDING, transition to FAILED and clean up resources
 	if session.State == domain.RentalStateRunning || session.State == domain.RentalStatePending {
 		h.logger.Warn("pod failed - transitioning session to FAILED",
 			"sessionId", sessionID,
@@ -122,6 +128,20 @@ func (h *K8sStateHandler) OnPodFailed(ctx context.Context, sessionID string, rea
 
 		if err := h.sessionManager.TransitionToFailed(ctx, sessionID, fmt.Sprintf("pod failed: %s", reason)); err != nil {
 			return fmt.Errorf("failed to transition to FAILED: %w", err)
+		}
+
+		// Clean up K8s resources (Pod, Service, Secret) and release capacity
+		if h.executor != nil {
+			if err := h.executor.DeleteGPUSession(ctx, session); err != nil {
+				h.logger.Warn("failed to clean up Pod after failure",
+					"sessionId", sessionID,
+					"error", err,
+				)
+			} else {
+				h.logger.Info("cleaned up failed Pod resources",
+					"sessionId", sessionID,
+				)
+			}
 		}
 
 		h.logger.Info("session transitioned to FAILED due to pod failure",

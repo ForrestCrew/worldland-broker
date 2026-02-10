@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/worldland/worldland-hub/internal/blockchain"
 	"github.com/worldland/worldland-hub/internal/domain"
-	"github.com/worldland/worldland-hub/internal/rental"
 	"github.com/worldland/worldland-hub/internal/sessions"
 )
 
@@ -189,6 +188,10 @@ func (m *mockConfirmationNodeRepo) ListActive(ctx context.Context) ([]*domain.No
 	return nil, nil
 }
 
+func (m *mockConfirmationNodeRepo) ListActiveGroupedByGPU(ctx context.Context) ([]*domain.GPUTypeGroup, error) {
+	return nil, nil
+}
+
 func (m *mockConfirmationNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
 	return nil, nil
 }
@@ -232,25 +235,35 @@ func (m *mockConfirmationProviderRepo) ListByType(ctx context.Context, providerT
 	return nil, nil
 }
 
-type mockConfirmationNodeClient struct {
-	startRentalResp *rental.StartRentalResponse
-	startRentalErr  error
-	stopRentalResp  *rental.StopRentalResponse
-	stopRentalErr   error
+// mockJobExecutor implements domain.JobExecutor for testing
+type mockJobExecutor struct {
+	createPassword string
+	createErr      error
+	deleteErr      error
+	sshInfo        *domain.SSHConnectionInfo
+	sshErr         error
 }
 
-func (m *mockConfirmationNodeClient) StartRental(ctx context.Context, nodeURL string, req rental.StartRentalRequest) (*rental.StartRentalResponse, error) {
-	if m.startRentalErr != nil {
-		return nil, m.startRentalErr
+func (m *mockJobExecutor) CreateGPUSession(ctx context.Context, spec domain.JobSpec) (string, error) {
+	if m.createErr != nil {
+		return "", m.createErr
 	}
-	return m.startRentalResp, nil
+	return m.createPassword, nil
 }
 
-func (m *mockConfirmationNodeClient) StopRental(ctx context.Context, nodeURL string, req rental.StopRentalRequest) (*rental.StopRentalResponse, error) {
-	if m.stopRentalErr != nil {
-		return nil, m.stopRentalErr
+func (m *mockJobExecutor) DeleteGPUSession(ctx context.Context, session *domain.RentalSession) error {
+	return m.deleteErr
+}
+
+func (m *mockJobExecutor) GetSSHConnectionInfo(ctx context.Context, session *domain.RentalSession) (*domain.SSHConnectionInfo, error) {
+	if m.sshErr != nil {
+		return nil, m.sshErr
 	}
-	return m.stopRentalResp, nil
+	return m.sshInfo, nil
+}
+
+func (m *mockJobExecutor) GetPodStatus(ctx context.Context, session *domain.RentalSession) (string, error) {
+	return "Pending", nil
 }
 
 // Mock ReceiptClient for TransactionVerifier
@@ -333,15 +346,9 @@ func TestConfirmationWorker_VerifiesAndTransitions(t *testing.T) {
 	// Create session manager
 	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
 
-	// Mock node client
-	nodeClient := &mockConfirmationNodeClient{
-		startRentalResp: &rental.StartRentalResponse{
-			SessionID:  "session-1",
-			SSHHost:    "node.example.com",
-			SSHPort:    30001,
-			SSHUser:    "ubuntu",
-			SSHCommand: "ssh -p 30001 ubuntu@node.example.com",
-		},
+	// Mock executor
+	executor := &mockJobExecutor{
+		createPassword: "test-password",
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -351,8 +358,8 @@ func TestConfirmationWorker_VerifiesAndTransitions(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nodeClient,
 		nodeRepo,
+		executor,
 		logger,
 	)
 
@@ -404,8 +411,8 @@ func TestConfirmationWorker_PendingSkipsGracefully(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nil, // nodeClient not needed
 		nodeRepo,
+		nil, // no executor needed
 		logger,
 	)
 
@@ -459,8 +466,8 @@ func TestConfirmationWorker_FailedTransitions(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nil,
 		nodeRepo,
+		nil, // no executor needed for failed transitions
 		logger,
 	)
 
@@ -472,7 +479,7 @@ func TestConfirmationWorker_FailedTransitions(t *testing.T) {
 	assert.Equal(t, domain.RentalStateFailed, session.State)
 }
 
-func TestConfirmationWorker_NodeStartFailure(t *testing.T) {
+func TestConfirmationWorker_ExecutorFailure(t *testing.T) {
 	// Setup mocks
 	sessionRepo := newMockConfirmationSessionRepo()
 	nodeRepo := newMockConfirmationNodeRepo()
@@ -510,9 +517,9 @@ func TestConfirmationWorker_NodeStartFailure(t *testing.T) {
 	verifier := blockchain.NewTransactionVerifier(receiptClient, contractAddr)
 	sessionManager := sessions.NewSessionManager(sessionRepo, nodeRepo, providerRepo)
 
-	// Mock node client that fails
-	nodeClient := &mockConfirmationNodeClient{
-		startRentalErr: rental.ErrNodeUnreachable,
+	// Mock executor that fails
+	executor := &mockJobExecutor{
+		createErr: errors.New("K8s cluster unreachable"),
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -521,15 +528,15 @@ func TestConfirmationWorker_NodeStartFailure(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nodeClient,
 		nodeRepo,
+		executor,
 		logger,
 	)
 
 	ctx := context.Background()
 	worker.ProcessOnce(ctx)
 
-	// Session should transition to FAILED because node start failed
+	// Session should transition to FAILED because executor failed
 	session := sessionRepo.sessions["session-1"]
 	assert.Equal(t, domain.RentalStateFailed, session.State)
 }
@@ -554,8 +561,8 @@ func TestConfirmationWorker_ContextCancellation(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nil,
 		nodeRepo,
+		nil,
 		logger,
 	).WithInterval(50 * time.Millisecond)
 
@@ -600,8 +607,8 @@ func TestConfirmationWorker_ListError(t *testing.T) {
 		sessionRepo,
 		verifier,
 		sessionManager,
-		nil,
 		nodeRepo,
+		nil, // no executor needed
 		logger,
 	)
 

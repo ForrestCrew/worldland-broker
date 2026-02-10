@@ -34,6 +34,8 @@ type RegisterNodeRequest struct {
 	GPUType     string `json:"gpu_type" binding:"required"`
 	MemoryGB    int    `json:"memory_gb" binding:"required,min=1"`
 	PricePerSec string `json:"price_per_sec" binding:"required"`
+	GPUModel    string `json:"gpu_model"`  // NVML model name (e.g. "Tesla T4")
+	VramMB      int    `json:"vram_mb"`    // GPU VRAM in MB
 }
 
 // RegisterNode creates a new GPU node registration
@@ -62,6 +64,8 @@ func (h *NodeHandler) RegisterNode(c *gin.Context) {
 		MemoryGB:    req.MemoryGB,
 		PricePerSec: req.PricePerSec,
 		APIEndpoint: apiEndpoint,
+		GPUModel:    req.GPUModel,
+		VramMB:      req.VramMB,
 	}
 
 	node, err := h.nodeService.RegisterNode(c.Request.Context(), input)

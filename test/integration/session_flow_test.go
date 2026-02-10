@@ -146,6 +146,7 @@ func TestSessionFlow_MatchingToCompletion(t *testing.T) {
 			node.ID,
 			node.PricePerSecond,
 			"", // default image
+			nil,
 		)
 		require.NoError(t, err)
 		assert.NotEmpty(t, session.ID)
@@ -228,7 +229,7 @@ func TestSessionFlow_PendingTimeout(t *testing.T) {
 	userAddress := "0x" + uuid.New().String()[:40]
 
 	// Create session
-	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, domain.RentalStatePending, session.State)
 
@@ -276,7 +277,7 @@ func TestSessionFlow_UserCancellation(t *testing.T) {
 	userAddress := "0x" + uuid.New().String()[:40]
 
 	// Create session in PENDING state
-	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, domain.RentalStatePending, session.State)
 
@@ -316,7 +317,7 @@ func TestSessionFlow_InvalidTransition(t *testing.T) {
 	userAddress := "0x" + uuid.New().String()[:40]
 
 	// Create and complete a session (PENDING -> RUNNING -> STOPPED)
-	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	session, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err)
 
 	err = sessionManager.TransitionToRunning(ctx, session.ID, 1, 1, "0x"+uuid.New().String()[:64], time.Now())
@@ -362,15 +363,15 @@ func TestSessionFlow_ListByUser(t *testing.T) {
 	userAddress := "0x" + uuid.New().String()[:40]
 
 	// Create multiple sessions in different states
-	_, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	_, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err) // PENDING
 
-	session2, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	session2, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err)
 	err = sessionManager.TransitionToRunning(ctx, session2.ID, 1, 1, "0x"+uuid.New().String()[:64], time.Now())
 	require.NoError(t, err) // RUNNING
 
-	session3, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "")
+	session3, err := sessionManager.CreateSession(ctx, userAddress, node.ID, node.PricePerSecond, "", nil)
 	require.NoError(t, err)
 	err = sessionManager.TransitionToCancelled(ctx, session3.ID)
 	require.NoError(t, err) // CANCELLED

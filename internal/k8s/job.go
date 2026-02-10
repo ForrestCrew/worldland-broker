@@ -17,6 +17,40 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// sanitizeLabel converts a string to a valid K8s label value.
+// K8s labels: max 63 chars, alphanumeric or -_.
+func sanitizeLabel(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	var b []byte
+	for _, c := range []byte(s) {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			b = append(b, c)
+		} else {
+			b = append(b, '-')
+		}
+	}
+	if len(b) > 63 {
+		b = b[:63]
+	}
+	return string(b)
+}
+
+// buildNodeSelector creates a NodeSelector based on job spec.
+// Mirrors proxy's buildNodeSelector: specific hostname or any GPU rental node.
+func buildNodeSelector(spec GPUJobSpec) map[string]string {
+	if spec.NodeHostname != "" {
+		return map[string]string{
+			"kubernetes.io/hostname": spec.NodeHostname,
+		}
+	}
+	// Default: schedule on any node labeled for GPU rental
+	return map[string]string{
+		LabelRentalType: "gpu",
+	}
+}
+
 // extractHostIP extracts a plain IP from a URL like "https://34.64.255.101:6443"
 func extractHostIP(hostOrURL string) string {
 	if u, err := url.Parse(hostOrURL); err == nil && u.Host != "" {
@@ -50,11 +84,65 @@ func (m *JobManager) WithExternalHost(host string) *JobManager {
 	return m
 }
 
+// buildResourceRequirements creates K8s ResourceRequirements from GPUJobSpec.
+// CPU/Memory: requests < limits (Burstable QoS) to allow scheduling on nodes
+// where system pods (kube-proxy, flannel, nvidia-plugin) consume some resources.
+// GPU: requests == limits (nvidia device plugin requirement).
+func buildResourceRequirements(spec GPUJobSpec) corev1.ResourceRequirements {
+	cpuStr := strconv.Itoa(spec.CPUCores)
+	memStr := strconv.Itoa(spec.MemoryGB) + "Gi"
+
+	// Reserve 500m CPU for system pods (kube-proxy, flannel, nvidia-plugin)
+	cpuRequestMillis := spec.CPUCores*1000 - 500
+	if cpuRequestMillis < 500 {
+		cpuRequestMillis = 500
+	}
+	cpuRequestStr := strconv.Itoa(cpuRequestMillis) + "m"
+
+	// Reserve 512Mi memory for system pods
+	memRequestMB := spec.MemoryGB*1024 - 512
+	if memRequestMB < 512 {
+		memRequestMB = 512
+	}
+	memRequestStr := strconv.Itoa(memRequestMB) + "Mi"
+
+	reqs := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpuRequestStr),
+			corev1.ResourceMemory: resource.MustParse(memRequestStr),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpuStr),
+			corev1.ResourceMemory: resource.MustParse(memStr),
+		},
+	}
+
+	if spec.StorageGB > 0 {
+		storageStr := strconv.Itoa(spec.StorageGB) + "Gi"
+		reqs.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse(storageStr)
+		reqs.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse(storageStr)
+	}
+
+	return reqs
+}
+
 // CreateGPUSession creates a GPU Pod with SSH password injection
 // Returns the generated SSH password for the caller to store
+// Idempotent: if Pod already exists, returns existing SSH password
 func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (password string, err error) {
 	namespace := TenantNamespace(spec.UserAddress)
 	podName := PodName(spec.SessionID)
+
+	// Idempotency: check if Pod already exists (e.g. worker restart)
+	existingPod, _ := m.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if existingPod != nil && existingPod.Name != "" && existingPod.DeletionTimestamp == nil {
+		m.logger.Info("pod already exists, returning existing SSH password",
+			"sessionId", spec.SessionID,
+			"podName", podName,
+		)
+		existingPwd, _ := GetSSHPassword(ctx, m.clientset, namespace, spec.SessionID)
+		return existingPwd, nil
+	}
 
 	// Generate SSH password
 	password = GenerateSSHPassword()
@@ -73,20 +161,23 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (pas
 				LabelSessionID:  spec.SessionID,
 				LabelProviderID: spec.ProviderID,
 				LabelGPURental:  "true",
+				LabelGPUModel:   sanitizeLabel(spec.GPUModel),
 			},
 			Annotations: map[string]string{
 				AnnotationExpiresAt:   spec.ExpiresAt.Format(time.RFC3339),
 				AnnotationUserAddress: spec.UserAddress,
 				AnnotationGPUModel:    spec.GPUModel,
+				AnnotationPricePerHr:  fmt.Sprintf("%.2f", spec.PricePerHour),
+				AnnotationStorageGB:   fmt.Sprintf("%d", spec.StorageGB),
 			},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
-			NodeSelector: map[string]string{
-				LabelProviderID: spec.ProviderID,
-			},
+			// NodeSelector: schedule on specific node or any GPU rental node
+			// Mirrors proxy's buildNodeSelector pattern
+			NodeSelector: buildNodeSelector(spec),
 			Tolerations: []corev1.Toleration{{
-				Key:      "worldland.io/dedicated-rental",
+				Key:      TaintDedicatedRental,
 				Operator: corev1.TolerationOpExists,
 				Effect:   corev1.TaintEffectNoSchedule,
 			}},
@@ -95,13 +186,24 @@ func (m *JobManager) CreateGPUSession(ctx context.Context, spec GPUJobSpec) (pas
 				Image: spec.Image,
 				Command: []string{"/bin/bash", "-c"},
 				Args: []string{`
-apt-get update && apt-get install -y openssh-server && \
-mkdir -p /var/run/sshd && \
-useradd -m -s /bin/bash user && \
-echo "user:$SSH_PASSWORD" | chpasswd && \
-sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && \
-sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-/usr/sbin/sshd -D
+export DEBIAN_FRONTEND=noninteractive
+apt-get update && apt-get install -y --no-install-recommends openssh-server
+mkdir -p /run/sshd
+echo "root:$SSH_PASSWORD" | chpasswd
+sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+# Add conda/python to PATH for PyTorch/TensorFlow images
+if [ -d "/opt/conda/bin" ]; then
+  echo 'export PATH="/opt/conda/bin:$PATH"' >> /root/.bashrc
+  echo 'source /opt/conda/etc/profile.d/conda.sh 2>/dev/null || true' >> /root/.bashrc
+fi
+
+echo 'export CUDA_HOME="/usr/local/cuda"' >> /root/.bashrc
+echo "SSH server starting..."
+exec /usr/sbin/sshd -D -e
 `},
 				Env: []corev1.EnvVar{{
 					Name: "SSH_PASSWORD",
@@ -114,14 +216,12 @@ sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_c
 						},
 					},
 				}},
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse(spec.CPURequest),
-						corev1.ResourceMemory: resource.MustParse(spec.MemoryRequest),
-					},
-					Limits: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse(spec.CPULimit),
-						corev1.ResourceMemory: resource.MustParse(spec.MemoryLimit),
+				Resources: buildResourceRequirements(spec),
+				// SecurityContext: SYS_ADMIN for CUDA/GPU driver access
+				// Mirrors proxy: job/manager.go:281-285
+				SecurityContext: &corev1.SecurityContext{
+					Capabilities: &corev1.Capabilities{
+						Add: []corev1.Capability{"SYS_ADMIN"},
 					},
 				},
 				Ports: []corev1.ContainerPort{{

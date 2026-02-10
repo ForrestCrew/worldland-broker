@@ -42,5 +42,5 @@ type BaseImage struct {
 }
 
 // DefaultImage is the fallback container image when no image is specified
-// Note: NVIDIA images require full version (12.1.1 not 12.1)
-const DefaultImage = "nvidia/cuda:12.1.1-runtime-ubuntu22.04"
+// Matches proxy default: nvidia/cuda:12.0.0-devel-ubuntu22.04
+const DefaultImage = "nvidia/cuda:12.0.0-devel-ubuntu22.04"

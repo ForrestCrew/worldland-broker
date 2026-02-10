@@ -89,12 +89,20 @@ func (m *SessionManager) WithImageRepository(repo domain.ImageRepository) *Sessi
 	return m
 }
 
+// ResourceSpec contains user-selected resource requirements for a session
+type ResourceSpec struct {
+	GPUCount  int
+	CPUCores  int
+	MemoryGB  int
+	StorageGB int
+}
+
 // CreateSession creates a new rental session in PENDING state
 // It looks up the node to get the provider address
 // The dockerImage parameter can be:
 //   - Empty string: uses domain.DefaultImage
 //   - UUID: resolved to docker_image via ImageRepository (preset ID)
-func (m *SessionManager) CreateSession(ctx context.Context, userAddress, nodeID, pricePerSecond, dockerImage string) (*domain.RentalSession, error) {
+func (m *SessionManager) CreateSession(ctx context.Context, userAddress, nodeID, pricePerSecond, dockerImage string, resources *ResourceSpec) (*domain.RentalSession, error) {
 	// Resolve docker image (24-03)
 	resolvedImage, err := m.resolveDockerImage(ctx, dockerImage)
 	if err != nil {
@@ -124,6 +132,40 @@ func (m *SessionManager) CreateSession(ctx context.Context, userAddress, nodeID,
 		DockerImage:     resolvedImage,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+
+	// Apply resource specs with defaults
+	if resources != nil {
+		session.GPUCount = resources.GPUCount
+		session.CPUCores = resources.CPUCores
+		session.MemoryGB = resources.MemoryGB
+		session.StorageGB = resources.StorageGB
+	}
+	if session.GPUCount <= 0 {
+		session.GPUCount = 1
+	}
+	if session.CPUCores <= 0 {
+		session.CPUCores = 4
+	}
+	if session.MemoryGB <= 0 {
+		session.MemoryGB = 16
+	}
+	if session.StorageGB <= 0 {
+		session.StorageGB = 50
+	}
+
+	// Cap resources to node capacity
+	if node.TotalGPUs <= 0 {
+		// CPU-only node — no GPU allocation
+		session.GPUCount = 0
+	} else if session.GPUCount > node.TotalGPUs {
+		session.GPUCount = node.TotalGPUs
+	}
+	if node.TotalCPUCores > 0 && session.CPUCores > node.TotalCPUCores {
+		session.CPUCores = node.TotalCPUCores
+	}
+	if node.TotalMemoryGB > 0 && session.MemoryGB > node.TotalMemoryGB {
+		session.MemoryGB = node.TotalMemoryGB
 	}
 
 	if err := m.sessionRepo.Create(ctx, session); err != nil {

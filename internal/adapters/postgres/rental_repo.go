@@ -32,9 +32,10 @@ func (r *RentalSessionRepository) Create(ctx context.Context, session *domain.Re
 		INSERT INTO rental_sessions (
 			id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -51,6 +52,10 @@ func (r *RentalSessionRepository) Create(ctx context.Context, session *domain.Re
 		session.TxHash,
 		session.BlockNumber,
 		session.DockerImage,
+		session.GPUCount,
+		session.CPUCores,
+		session.MemoryGB,
+		session.StorageGB,
 		session.CreatedAt,
 		session.UpdatedAt,
 	).Scan(&session.ID, &session.CreatedAt, &session.UpdatedAt)
@@ -71,7 +76,8 @@ func (r *RentalSessionRepository) GetByID(ctx context.Context, id string) (*doma
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE id = $1 AND deleted_at IS NULL
 	`
@@ -88,7 +94,8 @@ func (r *RentalSessionRepository) GetByRentalID(ctx context.Context, rentalID ui
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE rental_id = $1 AND deleted_at IS NULL
 	`
@@ -157,7 +164,8 @@ func (r *RentalSessionRepository) ListByUser(ctx context.Context, userAddress st
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			settled_at, settled_amount, deleted_at, extended_until, extension_count,
-			total_extended_minutes, created_at, updated_at
+			total_extended_minutes, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE user_address = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -182,7 +190,8 @@ func (r *RentalSessionRepository) ListByProvider(ctx context.Context, providerAd
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE provider_address = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -201,7 +210,8 @@ func (r *RentalSessionRepository) ListByState(ctx context.Context, state domain.
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE state = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -223,7 +233,8 @@ func (r *RentalSessionRepository) FindStale(ctx context.Context, state domain.Re
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE state = $1 AND updated_at < $2 AND deleted_at IS NULL
 		ORDER BY updated_at ASC
@@ -248,7 +259,8 @@ func (r *RentalSessionRepository) FindByUserAndState(ctx context.Context, userAd
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE user_address = $1 AND state = $2 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -275,7 +287,8 @@ func (r *RentalSessionRepository) FindPendingSettlement(ctx context.Context, use
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE user_address = $1 AND state = $2 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -298,7 +311,9 @@ func (r *RentalSessionRepository) FindAllPendingSettlement(ctx context.Context) 
 	query := `
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
-			settled_at, settled_amount, deleted_at, created_at, updated_at
+			settled_at, settled_amount, deleted_at, extended_until, extension_count,
+			total_extended_minutes, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE state = $1 AND settled_at IS NULL AND deleted_at IS NULL
 		ORDER BY created_at ASC
@@ -344,7 +359,9 @@ func (r *RentalSessionRepository) GetByTxHash(ctx context.Context, txHash string
 	query := `
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
-			deleted_at, created_at, updated_at
+			deleted_at, extended_until, extension_count, total_extended_minutes,
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE tx_hash = $1 AND deleted_at IS NULL
 	`
@@ -407,7 +424,8 @@ func (r *RentalSessionRepository) ListPendingWithTxHash(ctx context.Context) ([]
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			deleted_at, extended_until, extension_count, total_extended_minutes,
-			docker_image, created_at, updated_at
+			docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE state = 'PENDING' AND tx_hash IS NOT NULL AND deleted_at IS NULL
 		ORDER BY created_at ASC
@@ -432,7 +450,8 @@ func (r *RentalSessionRepository) FindExpiringSessions(ctx context.Context, cuto
 		SELECT id, user_address, provider_address, node_id, rental_id, state,
 			price_per_second, start_time, end_time, tx_hash, block_number,
 			settled_at, settled_amount, deleted_at, extended_until, extension_count,
-			total_extended_minutes, created_at, updated_at
+			total_extended_minutes, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+			created_at, updated_at
 		FROM rental_sessions
 		WHERE state = 'RUNNING'
 			AND extended_until IS NOT NULL
@@ -510,6 +529,12 @@ func (r *RentalSessionRepository) CreateExtensionRecord(ctx context.Context, ses
 }
 
 // scanSession scans a single row into a RentalSession
+// Column order: id, user_address, provider_address, node_id, rental_id, state,
+//
+//	price_per_second, start_time, end_time, tx_hash, block_number,
+//	deleted_at, extended_until, extension_count, total_extended_minutes,
+//	docker_image, gpu_count, cpu_cores, memory_gb_req, storage_gb,
+//	created_at, updated_at
 func (r *RentalSessionRepository) scanSession(row pgx.Row) (*domain.RentalSession, error) {
 	var session domain.RentalSession
 	err := row.Scan(
@@ -529,6 +554,10 @@ func (r *RentalSessionRepository) scanSession(row pgx.Row) (*domain.RentalSessio
 		&session.ExtensionCount,
 		&session.TotalExtendedMinutes,
 		&session.DockerImage,
+		&session.GPUCount,
+		&session.CPUCores,
+		&session.MemoryGB,
+		&session.StorageGB,
 		&session.CreatedAt,
 		&session.UpdatedAt,
 	)
@@ -574,6 +603,10 @@ func (r *RentalSessionRepository) collectSessions(rows pgx.Rows) ([]*domain.Rent
 			&session.ExtensionCount,
 			&session.TotalExtendedMinutes,
 			&session.DockerImage,
+			&session.GPUCount,
+			&session.CPUCores,
+			&session.MemoryGB,
+			&session.StorageGB,
 			&session.CreatedAt,
 			&session.UpdatedAt,
 		)
@@ -674,6 +707,10 @@ func (r *RentalSessionRepository) collectSessionsWithSettlement(rows pgx.Rows) (
 			&session.ExtendedUntil,
 			&session.ExtensionCount,
 			&session.TotalExtendedMinutes,
+			&session.GPUCount,
+			&session.CPUCores,
+			&session.MemoryGB,
+			&session.StorageGB,
 			&session.CreatedAt,
 			&session.UpdatedAt,
 		)

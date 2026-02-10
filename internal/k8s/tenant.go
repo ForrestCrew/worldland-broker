@@ -21,11 +21,12 @@ const (
 	DefaultGPUQuotaName = "gpu-quota"
 
 	// CPU and memory per GPU (ADR-K8S-004)
-	CPUPerGPU           = 4
-	CPULimitPerGPU      = 8
-	MemoryGiPerGPU      = 16
-	MemoryLimitGiPerGPU = 32
-	MaxPodsPerTenant    = 10
+	CPUPerGPU                = 4
+	CPULimitPerGPU           = 8
+	MemoryGiPerGPU           = 16
+	MemoryLimitGiPerGPU      = 32
+	EphemeralStorageGiPerGPU = 20
+	MaxPodsPerTenant         = 10
 )
 
 // TenantOrchestrator manages tenant namespaces with resource quotas and network policies
@@ -179,13 +180,15 @@ func (t *TenantOrchestrator) UpdateTenantQuota(ctx context.Context, userAddress 
 
 	// Update hard limits
 	quota.Spec.Hard = corev1.ResourceList{
-		"requests.nvidia.com/gpu": resource.MustParse(strconv.Itoa(gpuCount)),
-		"limits.nvidia.com/gpu":   resource.MustParse(strconv.Itoa(gpuCount)),
-		"requests.cpu":            resource.MustParse(strconv.Itoa(CPUPerGPU * gpuCount)),
-		"limits.cpu":              resource.MustParse(strconv.Itoa(CPULimitPerGPU * gpuCount)),
-		"requests.memory":         resource.MustParse(fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount)),
-		"limits.memory":           resource.MustParse(fmt.Sprintf("%dGi", MemoryLimitGiPerGPU*gpuCount)),
-		corev1.ResourcePods:       resource.MustParse(strconv.Itoa(MaxPodsPerTenant)),
+		"requests.nvidia.com/gpu":        resource.MustParse(strconv.Itoa(gpuCount)),
+		"limits.nvidia.com/gpu":          resource.MustParse(strconv.Itoa(gpuCount)),
+		"requests.cpu":                   resource.MustParse(strconv.Itoa(CPUPerGPU * gpuCount)),
+		"limits.cpu":                     resource.MustParse(strconv.Itoa(CPULimitPerGPU * gpuCount)),
+		"requests.memory":                resource.MustParse(fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount)),
+		"limits.memory":                  resource.MustParse(fmt.Sprintf("%dGi", MemoryLimitGiPerGPU*gpuCount)),
+		"requests.ephemeral-storage":     resource.MustParse(fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount)),
+		"limits.ephemeral-storage":       resource.MustParse(fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount)),
+		corev1.ResourcePods:              resource.MustParse(strconv.Itoa(MaxPodsPerTenant)),
 	}
 
 	_, err = t.clientset.CoreV1().ResourceQuotas(namespace).Update(ctx, quota, metav1.UpdateOptions{})
@@ -198,6 +201,7 @@ func (t *TenantOrchestrator) UpdateTenantQuota(ctx context.Context, userAddress 
 		"gpuCount", gpuCount,
 		"cpuRequest", CPUPerGPU*gpuCount,
 		"memoryRequest", fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount),
+		"storageRequest", fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount),
 	)
 
 	return nil
@@ -212,13 +216,15 @@ func (t *TenantOrchestrator) createResourceQuota(ctx context.Context, namespace 
 		},
 		Spec: corev1.ResourceQuotaSpec{
 			Hard: corev1.ResourceList{
-				"requests.nvidia.com/gpu": resource.MustParse(strconv.Itoa(gpuCount)),
-				"limits.nvidia.com/gpu":   resource.MustParse(strconv.Itoa(gpuCount)),
-				"requests.cpu":            resource.MustParse(strconv.Itoa(CPUPerGPU * gpuCount)),
-				"limits.cpu":              resource.MustParse(strconv.Itoa(CPULimitPerGPU * gpuCount)),
-				"requests.memory":         resource.MustParse(fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount)),
-				"limits.memory":           resource.MustParse(fmt.Sprintf("%dGi", MemoryLimitGiPerGPU*gpuCount)),
-				corev1.ResourcePods:       resource.MustParse(strconv.Itoa(MaxPodsPerTenant)),
+				"requests.nvidia.com/gpu":        resource.MustParse(strconv.Itoa(gpuCount)),
+				"limits.nvidia.com/gpu":          resource.MustParse(strconv.Itoa(gpuCount)),
+				"requests.cpu":                   resource.MustParse(strconv.Itoa(CPUPerGPU * gpuCount)),
+				"limits.cpu":                     resource.MustParse(strconv.Itoa(CPULimitPerGPU * gpuCount)),
+				"requests.memory":                resource.MustParse(fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount)),
+				"limits.memory":                  resource.MustParse(fmt.Sprintf("%dGi", MemoryLimitGiPerGPU*gpuCount)),
+				"requests.ephemeral-storage":     resource.MustParse(fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount)),
+				"limits.ephemeral-storage":       resource.MustParse(fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount)),
+				corev1.ResourcePods:              resource.MustParse(strconv.Itoa(MaxPodsPerTenant)),
 			},
 		},
 	}
@@ -237,6 +243,7 @@ func (t *TenantOrchestrator) createResourceQuota(ctx context.Context, namespace 
 		"gpuCount", gpuCount,
 		"cpuRequest", CPUPerGPU*gpuCount,
 		"memoryRequest", fmt.Sprintf("%dGi", MemoryGiPerGPU*gpuCount),
+		"storageRequest", fmt.Sprintf("%dGi", EphemeralStorageGiPerGPU*gpuCount),
 	)
 
 	return nil

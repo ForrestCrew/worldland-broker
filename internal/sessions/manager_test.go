@@ -196,6 +196,10 @@ func (m *mockNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error) {
 	return nil, nil
 }
 
+func (m *mockNodeRepo) ListActiveGroupedByGPU(ctx context.Context) ([]*domain.GPUTypeGroup, error) {
+	return nil, nil
+}
+
 func (m *mockNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
 	for _, node := range m.nodes {
 		if node.GPUUUID == gpuUUID {
@@ -314,7 +318,7 @@ func TestCreateSession_PendingState(t *testing.T) {
 	manager, sessionRepo, _, _ := setupTestManager()
 	ctx := context.Background()
 
-	session, err := manager.CreateSession(ctx, "0xuser123", "node-1", "1000000000000000", "")
+	session, err := manager.CreateSession(ctx, "0xuser123", "node-1", "1000000000000000", "", nil)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

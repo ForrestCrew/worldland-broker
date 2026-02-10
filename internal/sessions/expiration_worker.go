@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/worldland/worldland-hub/internal/domain"
-	"github.com/worldland/worldland-hub/internal/k8s"
-	"github.com/worldland/worldland-hub/internal/rental"
 )
 
 // cleanPrice removes decimal points from price strings for BigInt compatibility
@@ -22,7 +20,6 @@ func cleanPrice(price string) string {
 
 const (
 	// DefaultExpirationInterval is how often to check for expired sessions
-	// Reduced to 5 seconds for faster settlement processing
 	DefaultExpirationInterval = 5 * time.Second
 
 	// ExpirationBatchLimit prevents long-running queries
@@ -30,32 +27,29 @@ const (
 )
 
 // ExpirationWorker monitors extended sessions and auto-terminates them at expiration
+// V4: Uses a single K8s JobExecutor — no Docker/remote branching.
 type ExpirationWorker struct {
 	sessionRepo domain.RentalSessionRepository
 	manager     *SessionManager
-	nodeClient  rental.NodeClientInterface
 	nodeRepo    domain.NodeRepository
+	executor    domain.JobExecutor // K8s executor (single path)
 	interval    time.Duration
 	logger      *slog.Logger
-	// NEW: K8s integration
-	jobManager *k8s.JobManager
-	// Phase 3: ExecutorRouter for provider-type branching
-	executorRouter *ExecutorRouter
 }
 
 // NewExpirationWorker creates a new background worker for auto-expiring sessions
 func NewExpirationWorker(
 	sessionRepo domain.RentalSessionRepository,
 	manager *SessionManager,
-	nodeClient rental.NodeClientInterface,
 	nodeRepo domain.NodeRepository,
+	executor domain.JobExecutor,
 	logger *slog.Logger,
 ) *ExpirationWorker {
 	return &ExpirationWorker{
 		sessionRepo: sessionRepo,
 		manager:     manager,
-		nodeClient:  nodeClient,
 		nodeRepo:    nodeRepo,
+		executor:    executor,
 		interval:    DefaultExpirationInterval,
 		logger:      logger,
 	}
@@ -64,18 +58,6 @@ func NewExpirationWorker(
 // WithInterval sets a custom check interval (useful for testing)
 func (w *ExpirationWorker) WithInterval(interval time.Duration) *ExpirationWorker {
 	w.interval = interval
-	return w
-}
-
-// WithK8s configures K8s integration for Pod deletion on expiration (legacy)
-func (w *ExpirationWorker) WithK8s(jobManager *k8s.JobManager) *ExpirationWorker {
-	w.jobManager = jobManager
-	return w
-}
-
-// WithExecutorRouter configures the executor router for provider-type branching (Phase 3)
-func (w *ExpirationWorker) WithExecutorRouter(router *ExecutorRouter) *ExpirationWorker {
-	w.executorRouter = router
 	return w
 }
 
@@ -101,7 +83,6 @@ func (w *ExpirationWorker) Start(ctx context.Context) error {
 
 // processExpiredSessions finds and terminates expired sessions
 func (w *ExpirationWorker) processExpiredSessions(ctx context.Context) {
-	// Find sessions that have passed their extended_until time
 	cutoff := time.Now()
 	sessions, err := w.sessionRepo.FindExpiringSessions(ctx, cutoff)
 	if err != nil {
@@ -132,27 +113,15 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 		"extendedUntil", session.ExtendedUntil,
 	)
 
-	// Phase 3: Delete container via ExecutorRouter (provider-type aware)
-	if w.executorRouter != nil {
-		if err := w.executorRouter.DeleteSessionContainer(ctx, session); err != nil {
-			w.logger.Error("failed to delete container for expired session",
+	// Delete K8s Pod via executor
+	if w.executor != nil {
+		if err := w.executor.DeleteGPUSession(ctx, session); err != nil {
+			w.logger.Error("failed to delete GPU session for expired session",
 				"sessionId", session.ID,
 				"error", err,
 			)
 		} else {
-			w.logger.Info("deleted container for expired session",
-				"sessionId", session.ID,
-			)
-		}
-	} else if w.jobManager != nil {
-		// Legacy: Delete K8s Pod first (idempotent)
-		if err := w.jobManager.DeleteGPUSession(ctx, session.UserAddress, session.ID); err != nil {
-			w.logger.Error("failed to delete K8s pod for expired session",
-				"sessionId", session.ID,
-				"error", err,
-			)
-		} else {
-			w.logger.Info("deleted K8s pod for expired session",
+			w.logger.Info("deleted GPU session for expired session",
 				"sessionId", session.ID,
 			)
 		}
@@ -179,39 +148,7 @@ func (w *ExpirationWorker) expireSession(ctx context.Context, session *domain.Re
 		}
 	}
 
-	// Lookup node
-	node, err := w.nodeRepo.GetByID(ctx, session.NodeID)
-	if err != nil {
-		w.logger.Error("failed to lookup node for expiration",
-			"sessionId", session.ID,
-			"nodeId", session.NodeID,
-			"error", err,
-		)
-		// Still try to transition state with calculated settlement
-		if err := w.manager.TransitionToStopped(ctx, session.ID, endTime, settlementAmount, "", 0); err != nil {
-			w.logger.Error("failed to transition expired session to STOPPED", "error", err)
-		}
-		return
-	}
-
-	// Call node to stop container (best effort)
-	if node.APIEndpoint != "" {
-		stopReq := rental.StopRentalRequest{
-			SessionID: session.ID,
-		}
-		if _, err := w.nodeClient.StopRental(ctx, node.APIEndpoint, stopReq); err != nil {
-			w.logger.Error("failed to stop container on node (will still mark STOPPED)",
-				"sessionId", session.ID,
-				"nodeId", session.NodeID,
-				"error", err,
-			)
-			// Continue - database is source of truth
-		}
-	}
-
 	// Transition to STOPPED with calculated settlement amount
-	// Note: In production, this would involve blockchain stopRental call
-	// For now, we just update database state - blockchain settlement happens separately
 	if err := w.manager.TransitionToStopped(ctx, session.ID, endTime, settlementAmount, "", 0); err != nil {
 		w.logger.Error("failed to transition expired session to STOPPED",
 			"sessionId", session.ID,

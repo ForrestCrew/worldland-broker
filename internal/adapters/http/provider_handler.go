@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -251,6 +252,18 @@ func (h *ProviderHandler) autoRegisterK8sGPUNodes(ctx context.Context, providerI
 
 	registered := 0
 	for _, n := range nodeList.Items {
+		// Skip control-plane/master nodes — they should not be registered as GPU providers
+		isControlPlane := false
+		for label := range n.Labels {
+			if label == "node-role.kubernetes.io/control-plane" || label == "node-role.kubernetes.io/master" {
+				isControlPlane = true
+				break
+			}
+		}
+		if isControlPlane {
+			continue
+		}
+
 		// Check if node is Ready
 		isReady := false
 		for _, cond := range n.Status.Conditions {
@@ -290,6 +303,10 @@ func (h *ProviderHandler) autoRegisterK8sGPUNodes(ctx context.Context, providerI
 			memGB = 1
 		}
 
+		// Calculate CPU cores
+		cpuQty := n.Status.Capacity.Cpu()
+		cpuCores := int(cpuQty.Value())
+
 		// Generate deterministic node ID from cluster + node name
 		nodeID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(providerID+"/"+n.Name)).String()
 		gpuUUID := fmt.Sprintf("k8s-%s-%s", providerID[:8], n.Name)
@@ -297,10 +314,15 @@ func (h *ProviderHandler) autoRegisterK8sGPUNodes(ctx context.Context, providerI
 		// Check if already registered
 		existing, _ := h.nodeRepo.GetByID(ctx, nodeID)
 		if existing != nil {
-			// Update status to active
+			// Update status and capacity
 			existing.Status = domain.NodeStatusActive
 			existing.GPUType = gpuType
 			existing.MemoryGB = memGB
+			existing.TotalGPUs = int(gpuCount)
+			existing.AvailableGPUs = int(gpuCount)
+			existing.TotalCPUCores = cpuCores
+			existing.TotalMemoryGB = memGB
+			existing.K8sNodeName = n.Name
 			existing.UpdatedAt = time.Now()
 			h.nodeRepo.Update(ctx, existing)
 			registered++
@@ -317,6 +339,11 @@ func (h *ProviderHandler) autoRegisterK8sGPUNodes(ctx context.Context, providerI
 			MemoryGB:       memGB,
 			PricePerSecond: "1000000000", // Default 1 Gwei/sec
 			Status:         domain.NodeStatusActive,
+			TotalGPUs:      int(gpuCount),
+			AvailableGPUs:  int(gpuCount),
+			TotalCPUCores:  cpuCores,
+			TotalMemoryGB:  memGB,
+			K8sNodeName:    n.Name,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 			// APIEndpoint intentionally empty → K8s routing
@@ -335,6 +362,90 @@ func (h *ProviderHandler) autoRegisterK8sGPUNodes(ctx context.Context, providerI
 		"registered", registered,
 		"total", len(nodeList.Items),
 	)
+}
+
+// GetJoinToken returns a kubeadm join token for a K8s provider's cluster.
+// GET /api/v1/providers/:wallet/join-token
+// Used by worker-mode SDKs to join a master's K8s cluster.
+func (h *ProviderHandler) GetJoinToken(c *gin.Context) {
+	wallet := c.Param("wallet")
+	if wallet == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "wallet address required"})
+		return
+	}
+
+	// Find provider by wallet address
+	provider, err := h.providerRepo.GetByWallet(c.Request.Context(), wallet)
+	if err != nil || provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+		return
+	}
+
+	if provider.ProviderType != domain.ProviderTypeK8s {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is not K8s type"})
+		return
+	}
+
+	client := h.clusterRegistry.GetClient(provider.ID)
+	if client == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "K8s cluster not connected"})
+		return
+	}
+
+	// Create bootstrap token via K8s Secret API
+	ttl := 24 * time.Hour
+	tokenID, tokenSecret, err := k8s.CreateBootstrapToken(c.Request.Context(), client.Clientset, ttl)
+	if err != nil {
+		h.logger.Error("failed to create bootstrap token", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create join token"})
+		return
+	}
+
+	// Compute CA cert hash for secure discovery
+	var caHash string
+	var joinCommand string
+	if len(client.CACertData) > 0 {
+		caHash, err = k8s.ComputeCACertHash(client.CACertData)
+		if err != nil {
+			h.logger.Warn("failed to compute CA hash, falling back to unsafe skip", "error", err)
+			joinCommand = fmt.Sprintf("sudo kubeadm join %s --token %s.%s --discovery-token-unsafe-skip-ca-verification",
+				extractHostPort(client.ExternalHost), tokenID, tokenSecret)
+		} else {
+			joinCommand = k8s.GenerateJoinCommand(client.ExternalHost, tokenID, tokenSecret, caHash)
+		}
+	} else {
+		joinCommand = fmt.Sprintf("sudo kubeadm join %s --token %s.%s --discovery-token-unsafe-skip-ca-verification",
+			extractHostPort(client.ExternalHost), tokenID, tokenSecret)
+	}
+
+	h.logger.Info("Join token created",
+		"wallet", wallet,
+		"providerID", provider.ID,
+		"tokenID", tokenID,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"joinCommand": joinCommand,
+		"token":       fmt.Sprintf("%s.%s", tokenID, tokenSecret),
+		"caHash":      caHash,
+		"masterAddr":  extractHostPort(client.ExternalHost),
+		"expiresIn":   "24h",
+	})
+}
+
+// extractHostPort strips scheme from a URL, keeping host:port.
+// "https://10.0.0.1:6443" → "10.0.0.1:6443"
+func extractHostPort(addr string) string {
+	if addr == "" {
+		return "localhost:6443"
+	}
+	if strings.Contains(addr, "://") {
+		parts := strings.SplitN(addr, "://", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	return addr
 }
 
 // queryK8sNodes queries the K8s API for node information

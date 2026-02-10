@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/worldland/worldland-hub/internal/domain"
-	"github.com/worldland/worldland-hub/internal/rental"
 )
 
 func TestExpirationWorker_ProcessesExpiredSessions(t *testing.T) {
@@ -36,12 +35,11 @@ func TestExpirationWorker_ProcessesExpiredSessions(t *testing.T) {
 			"node-1": {ID: "node-1", APIEndpoint: "http://node:8080"},
 		},
 	}
-	mockNodeClient := &SimpleNodeClient{}
 	mockProviderRepo := &SimpleProviderRepo{}
 	manager := NewSessionManager(mockRepo, mockNodeRepo, mockProviderRepo)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	worker := NewExpirationWorker(mockRepo, manager, mockNodeClient, mockNodeRepo, logger)
+	worker := NewExpirationWorker(mockRepo, manager, mockNodeRepo, nil, logger)
 	worker.ProcessOnce(context.Background())
 
 	// Verify session was stopped (state should be STOPPED)
@@ -62,7 +60,7 @@ func TestExpirationWorker_SkipsNonExpiredSessions(t *testing.T) {
 	manager := NewSessionManager(mockRepo, mockNodeRepo, mockProviderRepo)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	worker := NewExpirationWorker(mockRepo, manager, nil, nil, logger)
+	worker := NewExpirationWorker(mockRepo, manager, mockNodeRepo, nil, logger)
 	worker.ProcessOnce(context.Background())
 
 	// Verify no sessions were modified
@@ -219,6 +217,10 @@ func (s *SimpleNodeRepo) ListActive(ctx context.Context) ([]*domain.Node, error)
 	return nil, nil
 }
 
+func (s *SimpleNodeRepo) ListActiveGroupedByGPU(ctx context.Context) ([]*domain.GPUTypeGroup, error) {
+	return nil, nil
+}
+
 func (s *SimpleNodeRepo) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
 	return nil, nil
 }
@@ -254,13 +256,3 @@ func (s *SimpleProviderRepo) ListByType(ctx context.Context, providerType domain
 	return nil, nil
 }
 
-// SimpleNodeClient - minimal node client
-type SimpleNodeClient struct{}
-
-func (s *SimpleNodeClient) StartRental(ctx context.Context, nodeURL string, req rental.StartRentalRequest) (*rental.StartRentalResponse, error) {
-	return nil, nil
-}
-
-func (s *SimpleNodeClient) StopRental(ctx context.Context, nodeURL string, req rental.StopRentalRequest) (*rental.StopRentalResponse, error) {
-	return &rental.StopRentalResponse{}, nil
-}

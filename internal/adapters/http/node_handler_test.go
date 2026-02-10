@@ -69,6 +69,10 @@ func (m *mockNodeRepo2) ListActive(ctx context.Context) ([]*domain.Node, error) 
 	return nil, nil
 }
 
+func (m *mockNodeRepo2) ListActiveGroupedByGPU(ctx context.Context) ([]*domain.GPUTypeGroup, error) {
+	return nil, nil
+}
+
 func (m *mockNodeRepo2) GetByGPUUUID(ctx context.Context, gpuUUID string) (*domain.Node, error) {
 	for _, node := range m.nodes {
 		if node.GPUUUID == gpuUUID {
