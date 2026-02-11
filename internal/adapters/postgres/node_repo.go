@@ -247,23 +247,19 @@ func (r *PostgresNodeRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// ListActive retrieves all nodes with status 'active' that don't have RUNNING/PENDING rentals
+// ListActive retrieves all active nodes that still have available GPUs.
+// Uses available_gpus (maintained by CapacityTracker) instead of NOT EXISTS,
+// so multiple users can rent partial GPUs from the same node.
 // Implements matching.NodeLister interface for ProviderMatcher
 func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Exclude nodes with active (PENDING or RUNNING) rental sessions
 	query := fmt.Sprintf(`
 		SELECT %s
 		FROM nodes n
 		WHERE n.status = $1
-		AND NOT EXISTS (
-			SELECT 1 FROM rental_sessions rs
-			WHERE rs.node_id = n.id
-			AND rs.state IN ('PENDING', 'RUNNING')
-			AND rs.deleted_at IS NULL
-		)
+		AND n.available_gpus > 0
 		ORDER BY n.created_at DESC
 	`, "n.id, n.provider_id, n.gpu_uuid, n.gpu_type, n.memory_gb, n.price_per_second, n.api_endpoint, n.status, n.certificate_expiry, n.total_gpus, n.available_gpus, n.total_cpu_cores, n.total_memory_gb, n.k8s_node_name, n.gpu_model, n.vram_mb, n.driver_version, n.external_ip, n.max_storage_gb, n.created_at, n.updated_at")
 

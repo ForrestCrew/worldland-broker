@@ -307,6 +307,9 @@ func (t *CapacityTracker) AllocateResources(providerID, nodeName string, alloc R
 		"available_mem", cap.AvailableMemoryGB,
 	)
 
+	// Immediately sync to DB so other users see updated available_gpus
+	go t.syncSingleNodeToDB(providerID, nodeName)
+
 	return nil
 }
 
@@ -386,6 +389,9 @@ func (t *CapacityTracker) ReleaseResources(providerID, nodeName string, alloc Re
 		"available_cpu", cap.AvailableCPUCores,
 		"available_mem", cap.AvailableMemoryGB,
 	)
+
+	// Immediately sync to DB so freed GPUs are visible to other users
+	go t.syncSingleNodeToDB(providerID, nodeName)
 }
 
 // GetCapacity returns the current capacity for a provider's node.
@@ -553,6 +559,49 @@ func extractPodResources(pod *corev1.Pod) (gpus, cpuCores, memGB int) {
 		}
 	}
 	return
+}
+
+// syncSingleNodeToDB immediately updates a single node's capacity in DB.
+// Called after AllocateResources/ReleaseResources so other users see correct available_gpus.
+func (t *CapacityTracker) syncSingleNodeToDB(providerID, nodeName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	t.mu.RLock()
+	providerCap := t.capacity[providerID]
+	t.mu.RUnlock()
+
+	if providerCap == nil {
+		return
+	}
+	cap, ok := providerCap[nodeName]
+	if !ok {
+		return
+	}
+
+	nodes, err := t.nodeRepo.GetByProvider(ctx, providerID)
+	if err != nil {
+		t.logger.Warn("syncSingleNodeToDB: failed to get nodes", "error", err)
+		return
+	}
+
+	for _, node := range nodes {
+		if node.K8sNodeName != nodeName {
+			continue
+		}
+		node.AvailableGPUs = cap.AvailableGPUCount()
+		node.TotalCPUCores = cap.TotalCPUCores
+		node.TotalMemoryGB = cap.TotalMemoryGB
+		node.UpdatedAt = time.Now()
+		if err := t.nodeRepo.Update(ctx, node); err != nil {
+			t.logger.Warn("syncSingleNodeToDB: failed to update node",
+				"nodeID", node.ID, "error", err)
+		} else {
+			t.logger.Info("syncSingleNodeToDB: node capacity synced",
+				"nodeID", node.ID, "availableGPUs", node.AvailableGPUs)
+		}
+		return
+	}
 }
 
 // syncCapacityToDB updates DB node records with current in-memory capacity
