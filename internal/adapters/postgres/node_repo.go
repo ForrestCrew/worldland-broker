@@ -28,6 +28,7 @@ const nodeColumns = `id, provider_id, gpu_uuid, gpu_type, memory_gb, price_per_s
 	api_endpoint, status, certificate_expiry,
 	total_gpus, available_gpus, total_cpu_cores, total_memory_gb, k8s_node_name,
 	gpu_model, vram_mb, driver_version, external_ip, max_storage_gb,
+	available_cpu_cores, available_memory_gb,
 	created_at, updated_at`
 
 // scanNode scans a single row into a domain.Node
@@ -53,6 +54,8 @@ func scanNode(row pgx.Row) (*domain.Node, error) {
 		&node.DriverVersion,
 		&node.ExternalIP,
 		&node.MaxStorageGB,
+		&node.AvailableCPUCores,
+		&node.AvailableMemoryGB,
 		&node.CreatedAt,
 		&node.UpdatedAt,
 	)
@@ -87,6 +90,8 @@ func scanNodes(rows pgx.Rows) ([]*domain.Node, error) {
 			&node.DriverVersion,
 			&node.ExternalIP,
 			&node.MaxStorageGB,
+			&node.AvailableCPUCores,
+			&node.AvailableMemoryGB,
 			&node.CreatedAt,
 			&node.UpdatedAt,
 		)
@@ -108,8 +113,9 @@ func (r *PostgresNodeRepository) Create(ctx context.Context, node *domain.Node) 
 			api_endpoint, status, certificate_expiry,
 			total_gpus, available_gpus, total_cpu_cores, total_memory_gb, k8s_node_name,
 			gpu_model, vram_mb, driver_version, external_ip, max_storage_gb,
+			available_cpu_cores, available_memory_gb,
 			created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 	`
 
 	_, err := r.pool.Exec(ctx, query,
@@ -132,6 +138,8 @@ func (r *PostgresNodeRepository) Create(ctx context.Context, node *domain.Node) 
 		node.DriverVersion,
 		node.ExternalIP,
 		node.MaxStorageGB,
+		node.AvailableCPUCores,
+		node.AvailableMemoryGB,
 		node.CreatedAt,
 		node.UpdatedAt,
 	)
@@ -200,7 +208,9 @@ func (r *PostgresNodeRepository) Update(ctx context.Context, node *domain.Node) 
 			status = $6, certificate_expiry = $7,
 			total_gpus = $8, available_gpus = $9, total_cpu_cores = $10, total_memory_gb = $11,
 			k8s_node_name = $12, gpu_model = $13, vram_mb = $14, driver_version = $15,
-			external_ip = $16, max_storage_gb = $17, updated_at = $18
+			external_ip = $16, max_storage_gb = $17,
+			available_cpu_cores = $18, available_memory_gb = $19,
+			updated_at = $20
 		WHERE id = $1
 	`
 
@@ -222,6 +232,8 @@ func (r *PostgresNodeRepository) Update(ctx context.Context, node *domain.Node) 
 		node.DriverVersion,
 		node.ExternalIP,
 		node.MaxStorageGB,
+		node.AvailableCPUCores,
+		node.AvailableMemoryGB,
 		node.UpdatedAt,
 	)
 
@@ -261,7 +273,7 @@ func (r *PostgresNodeRepository) ListActive(ctx context.Context) ([]*domain.Node
 		WHERE n.status = $1
 		AND n.available_gpus > 0
 		ORDER BY n.created_at DESC
-	`, "n.id, n.provider_id, n.gpu_uuid, n.gpu_type, n.memory_gb, n.price_per_second, n.api_endpoint, n.status, n.certificate_expiry, n.total_gpus, n.available_gpus, n.total_cpu_cores, n.total_memory_gb, n.k8s_node_name, n.gpu_model, n.vram_mb, n.driver_version, n.external_ip, n.max_storage_gb, n.created_at, n.updated_at")
+	`, "n.id, n.provider_id, n.gpu_uuid, n.gpu_type, n.memory_gb, n.price_per_second, n.api_endpoint, n.status, n.certificate_expiry, n.total_gpus, n.available_gpus, n.total_cpu_cores, n.total_memory_gb, n.k8s_node_name, n.gpu_model, n.vram_mb, n.driver_version, n.external_ip, n.max_storage_gb, n.available_cpu_cores, n.available_memory_gb, n.created_at, n.updated_at")
 
 	rows, err := r.pool.Query(ctx, query, domain.NodeStatusActive)
 	if err != nil {

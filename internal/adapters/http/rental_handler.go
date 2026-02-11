@@ -85,22 +85,24 @@ type FindProvidersResponse struct {
 
 // ProviderInfo represents a provider node in API response
 type ProviderInfo struct {
-	NodeID          string `json:"nodeId"`
-	ProviderID      string `json:"providerId"`
-	ProviderAddress string `json:"providerAddress"` // Wallet address for smart contract
-	GPUType         string `json:"gpuType"`
-	GPUModel        string `json:"gpuModel"`        // NVML model name (e.g. "Tesla T4")
-	VramGB          int    `json:"vramGb"`
-	VramMB          int    `json:"vramMb"`
-	TotalGPUs       int    `json:"totalGpus"`
-	AvailableGPUs   int    `json:"availableGpus"`
-	TotalCPUCores   int    `json:"totalCpuCores"`
-	TotalMemoryGB   int    `json:"totalMemoryGb"`
-	MaxStorageGB    int    `json:"maxStorageGb"`    // Max ephemeral storage available on node
-	PricePerSecond  string `json:"pricePerSecond"`
-	PricePerHour    string `json:"pricePerHour"` // Human-readable WLC/hr
-	Region          string `json:"region"`
-	Status          string `json:"status"`
+	NodeID            string `json:"nodeId"`
+	ProviderID        string `json:"providerId"`
+	ProviderAddress   string `json:"providerAddress"` // Wallet address for smart contract
+	GPUType           string `json:"gpuType"`
+	GPUModel          string `json:"gpuModel"`        // NVML model name (e.g. "Tesla T4")
+	VramGB            int    `json:"vramGb"`
+	VramMB            int    `json:"vramMb"`
+	TotalGPUs         int    `json:"totalGpus"`
+	AvailableGPUs     int    `json:"availableGpus"`
+	TotalCPUCores     int    `json:"totalCpuCores"`
+	AvailableCPUCores int    `json:"availableCpuCores"`
+	TotalMemoryGB     int    `json:"totalMemoryGb"`
+	AvailableMemoryGB int    `json:"availableMemoryGb"`
+	MaxStorageGB      int    `json:"maxStorageGb"`    // Max ephemeral storage available on node
+	PricePerSecond    string `json:"pricePerSecond"`
+	PricePerHour      string `json:"pricePerHour"` // Human-readable WLC/hr
+	Region            string `json:"region"`
+	Status            string `json:"status"`
 }
 
 // FindProviders handles POST /api/v1/rentals/providers
@@ -251,22 +253,30 @@ func (h *RentalHandler) CreateSession(c *gin.Context) {
 				return
 			}
 
-			if req.CPUCores > 0 && node.TotalCPUCores > 0 && req.CPUCores > node.TotalCPUCores {
+			availCPU := node.AvailableCPUCores
+			if availCPU == 0 {
+				availCPU = node.TotalCPUCores // Fallback if not yet tracked
+			}
+			if req.CPUCores > 0 && availCPU > 0 && req.CPUCores > availCPU {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error":     "CPU 부족",
 					"code":      "RES_006",
 					"requested": req.CPUCores,
-					"available": node.TotalCPUCores,
+					"available": availCPU,
 				})
 				return
 			}
 
-			if req.MemoryGB > 0 && node.TotalMemoryGB > 0 && req.MemoryGB > node.TotalMemoryGB {
+			availMem := node.AvailableMemoryGB
+			if availMem == 0 {
+				availMem = node.TotalMemoryGB // Fallback if not yet tracked
+			}
+			if req.MemoryGB > 0 && availMem > 0 && req.MemoryGB > availMem {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error":     "메모리 부족",
 					"code":      "RES_007",
 					"requested": req.MemoryGB,
-					"available": node.TotalMemoryGB,
+					"available": availMem,
 				})
 				return
 			}
@@ -624,21 +634,23 @@ func (h *RentalHandler) convertNodes(ctx context.Context, nodes []*domain.Node) 
 		}
 
 		info := &ProviderInfo{
-			NodeID:         n.ID,
-			ProviderID:     n.ProviderID,
-			GPUType:        n.GPUType,
-			GPUModel:       gpuModel,
-			VramGB:         vramGB,
-			VramMB:         n.VramMB,
-			TotalGPUs:      n.TotalGPUs,
-			AvailableGPUs:  n.AvailableGPUs,
-			TotalCPUCores:  n.TotalCPUCores,
-			TotalMemoryGB:  n.TotalMemoryGB,
-			MaxStorageGB:   n.MaxStorageGB,
-			PricePerSecond: cleanPriceString(n.PricePerSecond),
-			PricePerHour:   FormatWeiPerSecToPerHour(n.PricePerSecond),
-			Region:         "asia",
-			Status:         "available",
+			NodeID:            n.ID,
+			ProviderID:        n.ProviderID,
+			GPUType:           n.GPUType,
+			GPUModel:          gpuModel,
+			VramGB:            vramGB,
+			VramMB:            n.VramMB,
+			TotalGPUs:         n.TotalGPUs,
+			AvailableGPUs:     n.AvailableGPUs,
+			TotalCPUCores:     n.TotalCPUCores,
+			AvailableCPUCores: n.AvailableCPUCores,
+			TotalMemoryGB:     n.TotalMemoryGB,
+			AvailableMemoryGB: n.AvailableMemoryGB,
+			MaxStorageGB:      n.MaxStorageGB,
+			PricePerSecond:    cleanPriceString(n.PricePerSecond),
+			PricePerHour:      FormatWeiPerSecToPerHour(n.PricePerSecond),
+			Region:            "asia",
+			Status:            "available",
 		}
 
 		if h.providerRepo != nil && n.ProviderID != "" {

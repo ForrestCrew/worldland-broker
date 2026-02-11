@@ -23,10 +23,12 @@ type Node struct {
 	Status            NodeStatus `json:"status"`
 	CertificateExpiry *time.Time `json:"certificateExpiry,omitempty"`
 	// Capacity tracking (V4: populated from K8s cluster discovery)
-	TotalGPUs     int    `json:"totalGpus"`
-	AvailableGPUs int    `json:"availableGpus"`
-	TotalCPUCores int    `json:"totalCpuCores"`
-	TotalMemoryGB int    `json:"totalMemoryGb"`
+	TotalGPUs         int    `json:"totalGpus"`
+	AvailableGPUs     int    `json:"availableGpus"`
+	TotalCPUCores     int    `json:"totalCpuCores"`
+	TotalMemoryGB     int    `json:"totalMemoryGb"`
+	AvailableCPUCores int    `json:"availableCpuCores"`
+	AvailableMemoryGB int    `json:"availableMemoryGb"`
 	K8sNodeName   string `json:"k8sNodeName,omitempty"`
 	// GPU details (RunPod-style marketplace)
 	GPUModel      string `json:"gpuModel"`      // "Tesla T4" (NVML name)

@@ -592,13 +592,18 @@ func (t *CapacityTracker) syncSingleNodeToDB(providerID, nodeName string) {
 		node.AvailableGPUs = cap.AvailableGPUCount()
 		node.TotalCPUCores = cap.TotalCPUCores
 		node.TotalMemoryGB = cap.TotalMemoryGB
+		node.AvailableCPUCores = cap.AvailableCPUCores
+		node.AvailableMemoryGB = cap.AvailableMemoryGB
 		node.UpdatedAt = time.Now()
 		if err := t.nodeRepo.Update(ctx, node); err != nil {
 			t.logger.Warn("syncSingleNodeToDB: failed to update node",
 				"nodeID", node.ID, "error", err)
 		} else {
 			t.logger.Info("syncSingleNodeToDB: node capacity synced",
-				"nodeID", node.ID, "availableGPUs", node.AvailableGPUs)
+				"nodeID", node.ID,
+				"availableGPUs", node.AvailableGPUs,
+				"availableCPU", node.AvailableCPUCores,
+				"availableMem", node.AvailableMemoryGB)
 		}
 		return
 	}
@@ -632,6 +637,8 @@ func (t *CapacityTracker) syncCapacityToDB(ctx context.Context, providerID strin
 		node.AvailableGPUs = cap.AvailableGPUCount()
 		node.TotalCPUCores = cap.TotalCPUCores
 		node.TotalMemoryGB = cap.TotalMemoryGB
+		node.AvailableCPUCores = cap.AvailableCPUCores
+		node.AvailableMemoryGB = cap.AvailableMemoryGB
 		node.UpdatedAt = time.Now()
 
 		if err := t.nodeRepo.Update(ctx, node); err != nil {
